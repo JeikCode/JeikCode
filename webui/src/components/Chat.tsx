@@ -5796,11 +5796,14 @@ function AssistantMessageView({
 }) {
   const t = useT();
   const text = messageText(msg);
+  const trimmed = text.trim();
   const isError =
-    text.includes('[错误:') ||
-    text.includes('[连接错误:') ||
-    text.includes('[Error:') ||
-    text.includes('[Connection error:');
+    !messageHasTools(msg) &&
+    !msg.parts.some((p) => p.type === 'thought') &&
+    (trimmed.startsWith('[错误:') ||
+      trimmed.startsWith('[连接错误:') ||
+      trimmed.startsWith('[Error:') ||
+      trimmed.startsWith('[Connection error:'));
   const streaming = isLast && busy;
   // 终条且简短（无工具、单行）时，去掉多余 of "时间线末端"橙点，只留一个起始点。
   const terse =
