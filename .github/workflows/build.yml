@@ -209,14 +209,14 @@ jobs:
           rustup target add x86_64-apple-darwin
           rustup target add aarch64-apple-darwin
 
-      # 自动从 Git Tag 注入版本号到 Cargo.toml（无需手动改）
+      # 自动从 Git Tag 注入版本号到 Cargo.toml（兼容 macOS BSD sed）
       - name: Sync version from Git Tag
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           VERSION=${TAG_NAME#v}
           echo "Syncing Cargo.toml workspace version to $VERSION from tag $TAG_NAME ..."
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
 
       # 1. 优先编译 macOS x86_64 (Intel)
       - name: Build macOS x86_64
