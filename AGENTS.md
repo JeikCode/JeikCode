@@ -107,10 +107,11 @@ CLI / TUI / daemon / background / ACP / clix
   1. `build-webui` 自动编译 SPA 前端并打包为内嵌静态资源；
   2. macOS、Linux (zigbuild musl 纯静态)、Windows 3 物理 Runner 并发编译 6 套目标架构二进制；
   3. 通过 GitHub Actions 自动生成 Release 并上传 6 平台二进制包；
-- **标准发版执行闭环**：
-  1. 更新 `Cargo.toml`、`Cargo.lock` (`cargo check --workspace`)、`README*.md` 徽章、`scripts/install.*` 默认版本、`latest.json`；
-  2. 提交发版 commit 并推送到 `main` 分支；
-  3. 打 Tag 并推送触发流水线：`git tag vX.Y.Z && git push origin vX.Y.Z`；
-  4. 流水线构建完成后，执行 `bash scripts/release-self-update.sh vX.Y.Z JeikCode/JeikCode` 补全 `latest.json` 的 sha256 与 size 校验并推至 `main`；
+- **极简打 Tag 发版闭环 (无需手动修改任何版本号)**：
+  1. 日常提交代码并推送到 `main` 分支；
+  2. 直接打 Tag 并推送：`git tag vX.Y.Z && git push origin vX.Y.Z`；
+  3. 流水线自动提取 Tag 版本号写入编译期 `Cargo.toml`，并发编译发布 6 大平台 Release 制品；
+  4. 流水线收尾 Job 自动提取真实 SHA256 校验清单，自动将 `Cargo.toml`、`Cargo.lock`、`scripts/install.*` 及 `README` 徽章全部更新并推回 `main`；
+  5. 开发者本地执行 `git pull origin main` 即可全量同步。
 - 详见权威指南：[`docs/release-tutorial.md`](./docs/release-tutorial.md)。
 

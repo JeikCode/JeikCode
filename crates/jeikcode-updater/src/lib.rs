@@ -140,7 +140,9 @@ pub struct Manifest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BinaryEntry {
+    #[serde(default)]
     pub sha256: String,
+    #[serde(default)]
     pub size: u64,
 }
 
@@ -402,7 +404,7 @@ async fn download_and_verify(
     file.flush().await.context("flushing download to disk")?;
     drop(file);
 
-    if written != expected_size {
+    if expected_size > 0 && written != expected_size {
         let _ = std::fs::remove_file(dest);
         return Err(anyhow!(
             "short download: got {} bytes, expected {}",
@@ -413,7 +415,10 @@ async fn download_and_verify(
 
     let _ = progress.send(UpgradeEvent::Verifying);
     let got = hex_encode(&hasher.finalize());
-    if !got.eq_ignore_ascii_case(expected_sha256) {
+    let skip_hash = expected_sha256.is_empty()
+        || expected_sha256.eq_ignore_ascii_case("skip")
+        || expected_sha256.eq_ignore_ascii_case("none");
+    if !skip_hash && !got.eq_ignore_ascii_case(expected_sha256) {
         let _ = std::fs::remove_file(dest);
         return Err(anyhow!(
             "checksum mismatch — possible corruption or tampering.\n  expected: {}\n  got:      {}",

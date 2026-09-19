@@ -72,64 +72,34 @@ cargo build --release --bin jeikcode
      - **Windows**：`jeikcode-<tag>-windows-arm64.exe` 与 `jeikcode-<tag>-windows-x64.exe`
   3. 通过 `action-gh-release` 自动创建 GitHub Release 并上传全套 6 平台二进制。
 
-### 2. 标准发版执行闭环 (4 步标准操作)
+### 2. 极致简化的“纯打 Tag 发版”闭环 (Zero-Manual-Effort)
 
-以发布版本 **`v7.0.1`** 为例：
+**核心颠覆**：你**完全不需要手动修改** `Cargo.toml`、`Cargo.lock`、`install.sh`、`install.ps1`、`README*.md` 徽章或 `latest.json`！
 
-#### 第一步：元数据版本号同步
-修改以下关键版本标识：
-1. **`Cargo.toml`**：
-   ```toml
-   [workspace.package]
-   version = "7.0.1"
-   ```
-2. **`Cargo.lock`**：
-   运行 Cargo 检查命令，自动更新所有工作区 crate 的依赖锁定版本：
-   ```bash
-   cargo check --workspace
-   ```
-3. **技术文档徽章**：
-   更新 `README.md`、`README.zh-CN.md`、`README.en.md` 中的 `version-7.0.1` 与 `Releases-v7.0.1` 徽章。
-4. **一键安装脚本默认目标**：
-   - `scripts/install.ps1`：`$DefaultVersion = "v7.0.1"`
-   - `scripts/install.sh`：`DEFAULT_VERSION="v7.0.1"`
-5. **客户端自更新清单**：
-   - `latest.json`：`"version": "v7.0.1"`, `"released_at": "2026-09-19"`。
+日常开发中，你只需正常修改代码、修复 Bug 并正常提交 Commit。当你需要对外发布任意新版本（例如 `v7.0.2`）时，**整个发版流程仅需一行命令**：
 
-#### 第二步：提交发布 Commit 并推送至 `main`
 ```bash
-git add Cargo.toml Cargo.lock README*.md scripts/install.* latest.json
-git commit -m "release: v7.0.1 - 升级 workspace 版本与发版元数据
-
-- 升级 workspace 整体版本至 v7.0.1
-- 同步更新 Cargo.lock 所有 crate 依赖版本至 7.0.1
-- 更新 latest.json 清单与全套中英文技术文档版本徽章
-- 更新安装脚本默认下载与解析目标为 7.0.1
-
-Co-Authored-By: JeikCode <331041501+JeikCode@users.noreply.github.com>"
-
-git checkout main
-git merge local-dev
+# 1. 确保当前代码已推送到远程主干 main
 git push origin main
+
+# 2. 打上新版本 Tag 并推送到 GitHub（即可触发全自动化发布流水线！）
+git tag v7.0.2
+git push origin v7.0.2
 ```
 
-#### 第三步：打 Tag 并推送触发流水线
-```bash
-git tag v7.0.1
-git push origin v7.0.1
-```
-> 推送后可在 `https://github.com/JeikCode/JeikCode/actions` 查看实时矩阵构建进度，约 5~8 分钟后 GitHub Releases 页面自动发布完成。
+#### 流水线在云端自动完成的全部闭环工作：
+1. **编译期自动版本注入**：
+   - 3 大 Runner 在编译前自动从 Git Tag 提取纯数字版本号（`v7.0.2` → `7.0.2`），动态写入 `Cargo.toml`；
+   - 编译出的全部 6 平台二进制内部直接烙印本次 Tag 版本号（`jeikcode --version` 严格输出 `v7.0.2`）；
+2. **x86_64 优先编译与即时发布**：
+   - Windows Runner 优先编译 x86_64 并**立即发布** `windows-x64.exe`；Linux/macOS 同样 x86_64 优先；
+3. **全自动全量元数据同步回写**：
+   - 流水线收尾 Job 会自动从 Releases 页面下载 6 大产物并计算真实的 SHA256 与文件大小；
+   - 自动生成最新的 `latest.json` 升级清单；
+   - 自动将 `Cargo.toml`、`Cargo.lock`、`scripts/install.ps1`、`scripts/install.sh` 及全套 `README*.md` 徽章版本统一提升为 `v7.0.2`；
+   - 以 `github-actions[bot]` 自动提交并直接推送到 `main` 分支（附带 `[skip ci]`，防止循环触发）。
 
-#### 第四步：补充制品真实 SHA256 校验 (收尾)
-流水线构建完成后，执行内置脚本抓取正式制品的 SHA256 与文件大小写入 `latest.json`，并推送至 `main`：
-```bash
-bash scripts/release-self-update.sh v7.0.1 JeikCode/JeikCode
-git add latest.json
-git commit -m "fix(release): 补充 v7.0.1 官方发布制品 sha256 校验清单
-
-Co-Authored-By: JeikCode <331041501+JeikCode@users.noreply.github.com>"
-git push origin main
-```
+> **开发者唯一要做的事**：发版后，在本地执行一次 `git pull origin main`，即可拉取由 GitHub Actions 全自动同步好的最新版本元数据！
 
 ---
 
