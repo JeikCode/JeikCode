@@ -99,7 +99,7 @@ CLI / TUI / daemon / background / ACP / clix
   cd webui && npm run build && cd ..
   cargo install --path crates/jeikcode-cli --bin jeikcode --locked
   ```
-- 详见权威指南：[`docs/install-tutorial.md`](./docs/install-tutorial.md)。
+- 详见权威指南：[`docs/release-tutorial.md`](./docs/release-tutorial.md)。
 
 ### 6.3 一键打 Tag 自动化发版流水线
 - **CI 触发源**：`.github/workflows/build.yml` 监听 `push: tags: - "v*"`；

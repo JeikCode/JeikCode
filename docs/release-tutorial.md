@@ -1,73 +1,103 @@
-# JeikCode 自动化发版与 Release 指南
+# JeikCode 本地编译与自动化发版权威指南
 
-> **核心原则**：当前项目已全面收敛归一至 **GitHub Actions 一键打 Tag 自动化流水线**（定义于 `.github/workflows/build.yml`）。
-> 官方代码仓为 **`JeikCode/JeikCode`**，主干发版与在线安装严格基于 **`main`** 分支（`local-dev` 仅为历史特性兼容分支）。
-> 禁止且无需在本地机器手动交叉编译二进制。
+> **核心声明**：
+> 1. 本文档为 JeikCode 项目**唯一的本地编译与发布权威指南**，所有历史旧版文档与手动交叉编译流程已全部废除。
+> 2. 官方代码仓为 **`https://github.com/JeikCode/JeikCode`**，发布主干严格以 **`main`** 分支为准（`local-dev` 仅作为向下兼容与阶段性研发分支）。
+> 3. 本文仅保留日常开发与发版最核心的 **3 个标准场景**。
 
 ---
 
-## 1. 发版流水线触发机制
+## 场景一：改动了前端 (WebUI) 时，如何快速编译出最终 Windows 成品
 
-项目内置了完整的全平台自动构建流水线，触发条件为：
-```yaml
-on:
-  push:
-    tags:
-      - "v*"
+当你修改了 `webui/` 目录下的 React 前端代码、组件或样式，需要输出包含最新界面的 Windows 可执行程序成品时：
+
+### 1. 执行命令
+在项目根目录下依次执行：
+
+```powershell
+# 步骤 1：构建 WebUI 前端生产静态包
+cd webui
+npm run build
+cd ..
+
+# 步骤 2：编译 Windows 最终 Release 成品
+cargo build --release --bin jeikcode
 ```
 
-当向 GitHub 远程仓库推送任意 `v*` 格式的 Git Tag（如 `v7.0.1`）时，GitHub Actions 会自动启动以下矩阵作业：
-1. **前端预构建 (`build-webui`)**：
-   - 检出源码，在 `webui` 目录下执行 `npm run build`；
-   - 生成完整静态资源包并上传为 `webui-dist` 构件，作为后续各物理端编译时的内嵌依赖。
-2. **三端 6 平台矩阵编译**：
-   - **macOS Runner**：编译 `darwin-arm64`（Apple Silicon）与 `darwin-x64`（Intel）；
-   - **Linux Runner**：使用 `cargo-zigbuild` 编译纯静态 musl 二进制（`linux-arm64` 与 `linux-x64`），零动态 glibc 依赖，兼容所有 Linux 发行版与容器；
-   - **Windows Runner**：编译 `windows-arm64.exe` 与 `windows-x64.exe`。
-3. **自动发布 GitHub Release**：
-   - 使用 `softprops/action-gh-release@v2` 自动创建 Release 并上传 6 平台制品；
-   - 资产包命名规范：`jeikcode-<tag>-<platform>[.exe]`（例如 `jeikcode-v7.0.1-linux-x64`、`jeikcode-v7.0.1-windows-x64.exe`）。
+### 2. 成品输出路径
+- **可执行文件**：`target/release/jeikcode.exe`
+
+### 3. 底层机制与注意事项
+- **打包内嵌原理**：`crates/jeikcode-cli` 使用了 `rust-embed`，在 Rust 编译期会将 `webui/dist/` 目录下的所有 HTML/JS/CSS 资源直接压缩内嵌进生成的 `jeikcode.exe` 单一二进制文件中，运行时由 Axum 本地 Web 服务直接在内存中提供。
+- **为什么必须先 `npm run build`**：如果仅运行 `cargo build` 而不重新执行前端构建，Rust 编译器只会将**上一次旧的** `webui/dist` 资源打包进去，导致你在浏览器或 Web 视图中看不到前端改动。因此改了前端后，必须先执行 `npm run build` 生成新的 `dist`，再编译 Rust 成品。
 
 ---
 
-## 2. 标准发版执行步骤 (Agent / 开发者通用)
+## 场景二：没改前端 (仅后端/核心逻辑) 时，如何快速复用缓存秒级编译
 
-任何 Agent 或维护者发版时，严格按照以下 4 个阶段执行：
+当你只修改了 Rust 后端代码（例如 `jeikcode-coding`、`jeikcode-capabilities`、`jeikcode-kernel` 等），没有动 `webui/` 前端时：
 
-### 阶段一：更新版本元数据
+### 1. 执行命令
 
-修改以下关键文件的版本号（以升级至 `v7.0.1` 为例）：
+- **输出 Release 正式成品**：
+  ```powershell
+  cargo build --release --bin jeikcode
+  ```
+- **日常快速调试运行 (Debug 模式，编译速度最快)**：
+  ```powershell
+  cargo build --bin jeikcode
+  ```
 
+### 2. 成品输出路径
+- **Release 模式**：`target/release/jeikcode.exe`
+- **Debug 模式**：`target/debug/jeikcode.exe`
+
+### 3. 底层机制
+- **无需构建前端**：Rust 编译器在编译 `crates/jeikcode-cli` 时，会自动复用已经存在的 `webui/dist` 资源。
+- **Cargo 增量构建缓存**：未变动的 crate、中间构件以及第三方依赖全部直接命中 `target/` 缓存，仅重新编译有代码变动的 crate，通常 5~15 秒即可快速产出最新程序。
+
+---
+
+## 场景三：如果要彻底发版到新版，标准发版流程应该是怎样
+
+当前项目已全面收敛至 **GitHub Actions 一键打 Tag 自动化流水线**（配置位于 `.github/workflows/build.yml`），无需任何人工在本地繁琐地进行跨平台交叉编译或打包。
+
+### 1. 发版流水线机制 (CI Trigger)
+- **触发源**：`.github/workflows/build.yml` 监听 `push: tags: - "v*"`；
+- **全自动构建矩阵**：
+  1. `build-webui`：在 Ubuntu 环境下独立构建 WebUI SPA 并生成构件；
+  2. 三端物理 Runner 并发编译 6 套目标架构：
+     - **macOS**：`jeikcode-<tag>-darwin-arm64`（Apple Silicon）与 `jeikcode-<tag>-darwin-x64`（Intel）
+     - **Linux**：`jeikcode-<tag>-linux-arm64` 与 `jeikcode-<tag>-linux-x64`（基于 zigbuild 的纯静态 musl，无 libc 依赖）
+     - **Windows**：`jeikcode-<tag>-windows-arm64.exe` 与 `jeikcode-<tag>-windows-x64.exe`
+  3. 通过 `action-gh-release` 自动创建 GitHub Release 并上传全套 6 平台二进制。
+
+### 2. 标准发版执行闭环 (4 步标准操作)
+
+以发布版本 **`v7.0.1`** 为例：
+
+#### 第一步：元数据版本号同步
+修改以下关键版本标识：
 1. **`Cargo.toml`**：
    ```toml
    [workspace.package]
    version = "7.0.1"
    ```
 2. **`Cargo.lock`**：
-   运行编译检查，触发 Cargo 自动更新工作区所有 12 个 crate 的依赖版本：
+   运行 Cargo 检查命令，自动更新所有工作区 crate 的依赖锁定版本：
    ```bash
    cargo check --workspace
    ```
-3. **技术文档版本徽章**：
-   更新 `README.md`、`README.zh-CN.md`、`README.en.md` 中的徽章版本：
-   ```markdown
-   <img src="https://img.shields.io/badge/version-7.0.1-blue.svg" alt="version">
-   <img src="https://img.shields.io/badge/Releases-v7.0.1-00f2fe?style=for-the-badge&logo=github&logoColor=black" alt="Releases" />
-   ```
-4. **一键安装脚本默认版本**：
+3. **技术文档徽章**：
+   更新 `README.md`、`README.zh-CN.md`、`README.en.md` 中的 `version-7.0.1` 与 `Releases-v7.0.1` 徽章。
+4. **一键安装脚本默认目标**：
    - `scripts/install.ps1`：`$DefaultVersion = "v7.0.1"`
    - `scripts/install.sh`：`DEFAULT_VERSION="v7.0.1"`
-5. **客户端升级清单**：
-   - `latest.json`：更新 `"version": "v7.0.1"`，`"released_at"` 设为当天日期。
+5. **客户端自更新清单**：
+   - `latest.json`：`"version": "v7.0.1"`, `"released_at": "2026-09-19"`。
 
----
-
-### 阶段二：提交发版 Commit 并合入 `main`
-
-按照规范创建发版提交，合并至主干 `main`：
-
+#### 第二步：提交发布 Commit 并推送至 `main`
 ```bash
-# 1. 提交发版改动（必须严格遵循 Conventional Commits 与强制共同署名）
 git add Cargo.toml Cargo.lock README*.md scripts/install.* latest.json
 git commit -m "release: v7.0.1 - 升级 workspace 版本与发版元数据
 
@@ -78,37 +108,22 @@ git commit -m "release: v7.0.1 - 升级 workspace 版本与发版元数据
 
 Co-Authored-By: JeikCode <331041501+JeikCode@users.noreply.github.com>"
 
-# 2. 合入主干 main 分支并推送
 git checkout main
 git merge local-dev
 git push origin main
 ```
 
----
-
-### 阶段三：打 Tag 推送，触发流水线
-
-从 `main` 上的发布提交打上版本 Tag 并推送至 GitHub：
-
+#### 第三步：打 Tag 并推送触发流水线
 ```bash
-# 创建 Tag 并推送到远程
 git tag v7.0.1
 git push origin v7.0.1
 ```
+> 推送后可在 `https://github.com/JeikCode/JeikCode/actions` 查看实时矩阵构建进度，约 5~8 分钟后 GitHub Releases 页面自动发布完成。
 
-> **流水线观察**：访问 `https://github.com/JeikCode/JeikCode/actions` 观察进度，通常耗时 5~8 分钟完成全部 6 个平台的并行构建与归档。
-
----
-
-### 阶段四：发版后补充 SHA256 校验清单 (推荐)
-
-流水线构建完成并在 Releases 页面生成资产后，可使用项目内置工具自动拉取真实产物的校验值并更新 `latest.json`：
-
+#### 第四步：补充制品真实 SHA256 校验 (收尾)
+流水线构建完成后，执行内置脚本抓取正式制品的 SHA256 与文件大小写入 `latest.json`，并推送至 `main`：
 ```bash
-# 自动抓取 Releases 页面资产的真实 sha256 与文件大小并写入 latest.json
 bash scripts/release-self-update.sh v7.0.1 JeikCode/JeikCode
-
-# 提交清单并推送至 main 分支
 git add latest.json
 git commit -m "fix(release): 补充 v7.0.1 官方发布制品 sha256 校验清单
 
@@ -116,15 +131,15 @@ Co-Authored-By: JeikCode <331041501+JeikCode@users.noreply.github.com>"
 git push origin main
 ```
 
-至此，新版本发布全部闭环，全网所有新老用户即可通过在线安装脚本或 `/upgrade` 立即升级。
-
 ---
 
-## 3. 常见异常与排错指引
+## 附：用户端官方安装一键命令 (参考)
 
-| 问题现象 | 可能原因 | 解决办法 |
-| :--- | :--- | :--- |
-| 推送 Tag 后 Actions 未触发 | Tag 命名未以 `v` 开头 | 流水线规则要求 `v*`，请使用 `v7.0.1` 格式而非 `7.0.1` |
-| `build-webui` 报错 node/npm 异常 | `webui/package.json` 依赖损坏 | 本地先进入 `webui` 运行 `npm run build` 验证前端产物是否正常 |
-| 某个物理 Runner 编译超时或断网 | GitHub Runner 偶发网络抖动 | 在 GitHub Actions 页面对应 failed job 点击 `Re-run failed jobs` 即可 |
-| 发现严重 Bug 需要撤回发布 | 制品已公开需紧急止血 | 1. 登录 GitHub 网页编辑/删除该 Release；<br>2. 本地删除并推送删除 Tag：`git tag -d v7.0.1 && git push origin :refs/tags/v7.0.1` |
+- **Linux / macOS**：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install.sh | bash
+  ```
+- **Windows (PowerShell)**：
+  ```powershell
+  irm https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install.ps1 | iex
+  ```
