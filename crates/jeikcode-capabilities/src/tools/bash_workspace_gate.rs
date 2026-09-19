@@ -644,7 +644,7 @@ impl BashWorkspaceGate {
                 }
             }
             PermissionDecision::Deny => BeforeOutcome::deny(
-                "a destructive bash command needs approval and was denied".to_string(),
+                "a destructive bash command needs approval and was denied。用户显式拒绝了该操作，请停下来询问用户意图 (The user explicitly denied this operation. Please stop and ask the user for their intent).".to_string(),
             ),
         }
     }
@@ -785,7 +785,7 @@ impl ToolMiddleware for BashWorkspaceGate {
                 }
             }
             PermissionDecision::Deny => {
-                BeforeOutcome::deny("destructive bash denied by approval policy".to_string())
+                BeforeOutcome::deny("destructive bash denied by approval policy。用户显式拒绝了该操作，请停下来询问用户意图 (The user explicitly denied this operation. Please stop and ask the user for their intent).".to_string())
             }
         }
     }

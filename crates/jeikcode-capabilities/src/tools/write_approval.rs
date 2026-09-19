@@ -267,7 +267,7 @@ impl WriteApprovalGate {
                 }
             }
             PermissionDecision::Deny => BeforeOutcome::deny(format!(
-                "writing a sensitive path needs approval and was denied: {}. \
+                "writing a sensitive path was denied by the user: {}。用户显式拒绝了该操作，请停下来询问用户意图 (The user explicitly denied this operation. Please stop and ask the user for their intent). \
 If no approval dialog appeared, the session has no interactive approver (or Auto/bypass \
 mode is off). Retry after switching to Auto, or write under the workspace with a non-secret \
 filename. Credential files (.env, id_rsa, *.pem) always require approval.",
@@ -380,7 +380,9 @@ impl ToolMiddleware for WriteApprovalGate {
                 }
             }
             PermissionDecision::Deny => {
-                BeforeOutcome::deny(format!("denied by approval policy: {name}"))
+                BeforeOutcome::deny(format!(
+                    "denied by approval policy: {name}。用户显式拒绝了该操作，请停下来询问用户意图 (The user explicitly denied this operation. Please stop and ask the user for their intent)."
+                ))
             }
         }
     }

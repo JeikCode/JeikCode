@@ -378,7 +378,7 @@ impl ToolMiddleware for SensitivePathGate {
                 BeforeOutcome::Proceed
             }
             PermissionDecision::Deny => BeforeOutcome::deny(format!(
-                "reading a sensitive path needs approval and was denied: {}",
+                "reading a sensitive path was denied by the user: {}。用户显式拒绝了该操作，请停下来询问用户意图 (The user explicitly denied this operation. Please stop and ask the user for their intent).",
                 tool.name()
             )),
         }

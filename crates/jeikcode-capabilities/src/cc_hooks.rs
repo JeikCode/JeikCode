@@ -691,7 +691,7 @@ impl CCExternalHooks {
                 }
             }
             Ok(PermissionDecision::Deny) => BeforeOutcome::deny(format!(
-                "denied by approval prompt (hook ask): {}",
+                "denied by approval prompt (hook ask): {}。用户显式拒绝了该操作，请停下来询问用户意图 (The user explicitly denied this operation. Please stop and ask the user for their intent).",
                 call.name
             )),
         }

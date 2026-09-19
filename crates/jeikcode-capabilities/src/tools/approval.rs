@@ -282,7 +282,10 @@ impl ToolMiddleware for ApprovalMiddleware {
                 // Deny reason goes back to the model as the tool result; it made the call, so
                 // don't echo its full arguments back (token waste + the arg preview already
                 // renders in the tool header). Name the tool and the policy — that's the signal.
-                BeforeOutcome::deny(format!("denied by approval policy: {}", tool.name()))
+                BeforeOutcome::deny(format!(
+                    "denied by approval policy: {}。用户显式拒绝了该操作，请停下来询问用户意图 (The user explicitly denied this operation. Please stop and ask the user for their intent).",
+                    tool.name()
+                ))
             }
         }
     }

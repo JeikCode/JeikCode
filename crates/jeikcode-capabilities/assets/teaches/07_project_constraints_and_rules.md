@@ -10,7 +10,7 @@
 
 | 层级 | 查找文件名（按优先级命中首个） | 作用范围与说明 |
 | :--- | :--- | :--- |
-| **1. 全局层 (Global)** | `~/.jeikcode/JEIKCODE.md` | 全局基础指令（跨所有项目生效）。 |
+| **1. 全局层 (Global)** | `~/.jeikcode/AGENTS.md`<br>`~/.jeikcode/JEIKCODE.md` | 全局基础指令（跨所有项目生效）。 |
 | **2. 项目层 (Project)** | `1. .jeikcode.md`<br>`2. JEIKCODE.md`<br>`3. AGENTS.md`<br>`4. CLAUDE.md`<br>`5. claude.md` | **项目专属核心规范**（代码风格、架构边界、分支管理、提交规范等）。推荐在项目根目录创建 `AGENTS.md` 或 `JEIKCODE.md`。 |
 | **3. 用户层 (User)** | `.jeikcode.user.md` | **开发者个人本地偏好**（不提交至 Git，仅当前机器项目生效）。 |
 

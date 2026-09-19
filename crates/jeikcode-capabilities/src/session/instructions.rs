@@ -105,7 +105,9 @@ before searching code or inventing schema.",
 /// `home` = config root (`~/.jeikcode` or `~/.jeikcode`); `project` = workspace root.
 pub fn render_instructions(home: &Path, project: &Path) -> String {
     let mut out: Vec<String> = Vec::new();
-    let global = if home.join("JEIKCODE.md").exists() {
+    let global = if home.join("AGENTS.md").exists() {
+        home.join("AGENTS.md")
+    } else if home.join("JEIKCODE.md").exists() {
         home.join("JEIKCODE.md")
     } else {
         home.join("JEIKCODE.md")
