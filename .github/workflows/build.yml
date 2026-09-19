@@ -57,6 +57,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # 启用持久化构建与依赖缓存（秒级复用已编译依赖）
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "windows"
+
       - name: Add Windows targets (x86_64 first)
         run: |
           rustup target add x86_64-pc-windows-msvc
@@ -127,6 +133,12 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      # 启用持久化构建与依赖缓存（秒级复用已编译依赖）
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "linux"
 
       - name: Install cross-compilation tools
         run: |
@@ -204,6 +216,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # 启用持久化构建与依赖缓存（秒级复用已编译依赖）
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "macos"
+
       - name: Add macOS targets (x86_64 first)
         run: |
           rustup target add x86_64-apple-darwin
@@ -274,6 +292,12 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      # 启用持久化构建与依赖缓存
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "distro-pm"
 
       - name: Build with distro-pm feature
         run: cargo build -p jeikcode --features distro-pm
