@@ -1,163 +1,104 @@
-# JeikCode Self — 安装教程(各平台安装与源码开发模式)
+# JeikCode 安装与部署统一指南
 
-> 适用范围:本 fork(`jeikls/jeikcode`,维护分支 `local-dev`)的**安装**流程。
-> 分两种安装方式:
-> 1. **一键安装**(二进制,自动指向 local-dev 更新渠道)—— 服务器/普通机器用;
-> 2. **源码开发模式**(本地构建,注册为系统 `jeikcode` 命令)—— 开发机用。
->
-> 配套脚本:`scripts/install-self.{sh,ps1}`、`scripts/dev-install.{sh,ps1}`。
+> **核心原则**：当前项目已全面收敛归一至 **`JeikCode/JeikCode`** 官方组织，主干发布与在线脚本基于 **`main`** 分支。
+> 推荐所有用户优先使用官方一键安装脚本（自动检测平台并配置环境变量）。
 
 ---
 
-## 一、一键安装(二进制,推荐服务器/普通机器)
+## 1. 快速一键安装 (推荐)
 
-安装脚本会:自动检测平台 → 从你的仓库 local-dev 渠道下载最新 release → 校验 → 装到 PATH → 提示开启自动更新。
+一键安装脚本会自动识别操作系统架构（macOS Intel/ARM、Linux x64/ARM64、Windows x64/ARM64），从官方 GitHub Releases 下载对应的预编译静态二进制包，并将其放置于 `$HOME/.local/bin`（或系统 PATH）中。
 
-### macOS / Linux / HarmonyOS PC(Unix 系)
+### 1.1 Linux / macOS / HarmonyOS PC
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/scripts/install-self.sh | sh
-```
-
-没有 curl 时用 wget:
+打开终端执行以下单行命令：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/scripts/install-self.sh | sh
+curl -fsSL https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install.sh | bash
 ```
 
-### Windows
+> **说明**：
+> - 脚本优先安装至 `/usr/local/bin`（若有权限）或 `$HOME/.local/bin`；
+> - 会自动检测并向 `~/.bashrc` 或 `~/.zshrc` 追加 PATH 环境变量配置；
+> - 支持安装特定版本：`JEIKCODE_VERSION=v7.0.1 curl -fsSL ... | bash`。
 
-在 PowerShell 里执行:
+### 1.2 Windows (PowerShell)
+
+以普通用户或管理员身份打开 PowerShell 运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/scripts/install-self.ps1 | iex"
+irm https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install.ps1 | iex
 ```
 
-> Git-Bash / MSYS / Cygwin 用户也可用上面的 Unix 命令(脚本会自动装原生 Windows 版 `.exe`)。
-
-### 安装参数(可选)
-
-| 环境变量 | 作用 | 默认 |
-|---|---|---|
-| `JEIKCODE_VERSION` | 指定安装版本(tag,如 `0.0.0-dev.2`) | 自动从 latest.json 检测 |
-| `JEIKCODE_PREFIX` | 安装目录 | Unix: `/usr/local/bin`(可写时)或 `~/.local/bin`;Windows: `~\.local\bin` |
-| `JEIKCODE_MANIFEST_URL` | 覆盖 latest.json 地址 | 内置 local-dev 渠道 |
-| `JEIKCODE_DOWNLOAD_BASE` | 覆盖下载基址 | 内置 local-dev 渠道 |
-
-示例:指定版本 + 自定义目录
-
-```bash
-JEIKCODE_VERSION=0.0.0-dev.2 JEIKCODE_PREFIX=$HOME/bin \
-  curl -fsSL https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/scripts/install-self.sh | sh
-```
-
-### 安装后
-
-```bash
-jeikcode --version    # 验证（等价命令: jeikcode --version）
-jeikcode              # 首次启动: 若未配置模型则弹出交互式新手引导向导
-jeikcode              # 与 jeikcode 同一二进制，命令完全等价
-```
-
-### Agent 自动化 / 无人工交互一键初始化配置
-
-若您需要供自动化脚本或 Agent 初始化环境，可直接执行初始化命令：
-
-```bash
-# 一键自动写入全部默认配置文件 (prompts 提示词、词林、默认 config.toml(语言默认 zh-CN)、技能与工具)
-jeikcode setup --defaults
-# 或简写
-jeikcode setup -y
-```
-
-> **直接进入聊天界面逻辑**：
-> 运行 `jeikcode setup --defaults` 后，如果 `~/.jeikcode/config.toml` 中配置了模型（例如脚本写入了 `[providers.xxx]` 或 `[models]`），那么之后直接输入 `jeikcode` 启动时，系统会**自动检测到可用模型并直接跳过引导向导，秒进正式的聊天 TUI 界面**！
-
-**开启自动无感更新**(可选,推荐服务器):
-
-```bash
-# 编辑 ~/.jeikcode/config.toml,加一行:
-auto_update = true
-```
-
-之后每小时检测 local-dev 渠道,发现新版本自动下载暂存,重启生效。
+> **说明**：
+> - 默认安装至 `$HOME\.local\bin\jeikcode.exe`；
+> - 会自动写入当前用户的系统环境变量 PATH，并在当前会话中即刻生效，无需重启终端；
+> - 支持安装特定版本：`$env:JEIKCODE_VERSION="v7.0.1"; irm ... | iex`。
 
 ---
 
-## 二、源码开发模式(开发机 / 本地改代码用)
+## 2. 源码编译安装 (适合开发者与二次定制)
 
-作用:把本地 `cargo build --release` 的产物注册为系统 `jeikcode` 命令,
-免敲全量 `target/release/jeikcode` 路径;wrapper 设 `JEIKCODE_DEV=1`,
-防止自动更新覆盖本地构建。
+适用于需要深度参与开发或运行最新开发中特性的场景：
 
-### Unix(macOS / Linux / HarmonyOS)
+### 2.1 环境准备
+- **Rust 工具链**：Rust 1.88+（`rustup update`）
+- **Node.js**：Node 18+ 与 npm（用于编译 WebUI 前端）
 
+### 2.2 编译与全局安装
 ```bash
-cd /path/to/jeikcode
-./scripts/dev-install.sh            # 构建 + 注册(首次较慢,之后增量)
-# 或
-./scripts/dev-install.sh --skip-build   # 已有构建时只注册
+# 1. 克隆官方仓库
+git clone https://github.com/JeikCode/JeikCode.git
+cd JeikCode
+
+# 2. 预构建 WebUI 前端资产 (Rust 编译内嵌强依赖)
+cd webui && npm run build && cd ..
+
+# 3. 编译并安装 CLI 工具至 Cargo bin 目录
+cargo install --path crates/jeikcode-cli --bin jeikcode --locked
 ```
 
-### Windows
-
-```powershell
-cd C:\path\to\jeikcode
-powershell -ExecutionPolicy Bypass -File scripts\dev-install.ps1
-# 或 -SkipBuild 跳过构建
-```
-
-### 使用
-
+验证安装是否成功：
 ```bash
-jeikcode            # 等价于 /path/to/jeikcode/target/release/jeikcode
-```
-
-源码更新后重新跑一次脚本即可(增量构建很快):
-
-```bash
-./scripts/dev-install.sh
-```
-
-### 卸载 dev wrapper
-
-```bash
-./scripts/dev-install.sh --uninstall    # Unix
-powershell -ExecutionPolicy Bypass -File scripts\dev-install.ps1 -Uninstall   # Windows
+jeikcode --version
 ```
 
 ---
 
-## 三、安装后验证清单
+## 3. GitHub Releases 手动二进制下载
 
-| 检查 | 命令 | 期望 |
-|---|---|---|
-| 版本 | `jeikcode --version` | 显示安装/构建的版本 |
-| 词林已写入 | `ls ~/.jeikcode/thesaurus/` | 9 个领域词林文件 |
-| 内置工具清单 | `ls ~/.jeikcode/builtin-tools.txt` | 存在 |
-| MCP 默认接线 | `ls ~/.jeikcode/mcp.json` | 存在(首次启动写入) |
-| 图谱忽略规则 | `ls ~/.jeikcode/.codegraphignore` | 存在(首次启动写入) |
-| 提示词模板 | `ls ~/.jeikcode/prompts/` | `init.yaml` / `rules.yaml`（进模型）+ `root_docs_prompts.md` / `root_docs_内置工具.yaml` / `root_docs_内置技能.yaml`（文档,不进模型） |
-| 更新渠道 | `jeikcode upgrade` | 显示"already on latest"(或开始下载) |
+你也可以直接访问官方发布页面下载预编译制品：
+🔗 **Release 下载页**：[https://github.com/JeikCode/JeikCode/releases/latest](https://github.com/JeikCode/JeikCode/releases/latest)
 
----
+| 平台与架构 | 资产文件名 | 适用设备 |
+| :--- | :--- | :--- |
+| **macOS (Apple Silicon)** | `jeikcode-<tag>-darwin-arm64` | M1 / M2 / M3 / M4 系列 Mac |
+| **macOS (Intel)** | `jeikcode-<tag>-darwin-x64` | Intel CPU Mac |
+| **Linux (x86_64)** | `jeikcode-<tag>-linux-x64` | x86_64 架构 Linux 服务器 / PC (静态 musl，无需动态 glibc) |
+| **Linux (ARM64)** | `jeikcode-<tag>-linux-arm64` | aarch64 架构 Linux (树莓派、鲲鹏、飞腾等) |
+| **Windows (x64)** | `jeikcode-<tag>-windows-x64.exe` | 64 位 Intel / AMD Windows PC |
+| **Windows (ARM64)** | `jeikcode-<tag>-windows-arm64.exe` | 骁龙 X Elite / ARM Windows 平板与笔记本 |
 
-## 四、常见问题
-
-| 问题 | 原因 / 解决 |
-|---|---|
-| `curl: command not found` | 用 wget 版本命令,或先装 curl |
-| `Permission denied`(Unix 装到 /usr/local/bin) | 脚本自动用 sudo 重试;或设 `JEIKCODE_PREFIX=$HOME/.local/bin` |
-| Windows `Move-Item` 失败 | jeikcode.exe 正在运行(NTFS 文件锁)→ 关闭后重装 |
-| 下载 404 | 该平台还没发布(见发版教程 §三);或指定 `JEIKCODE_VERSION` |
-| 首次启动没有写入词林 | 检查 `~/.jeikcode/thesaurus/`;手动复制 `crates/jeikcode-capabilities/assets/thesaurus/` 下的文件 |
-| 首次启动没有写入 prompts | 检查 `~/.jeikcode/prompts/`;手动复制 `crates/jeikcode-coding/assets/prompts/` 下的文件(已有文件不会被覆盖) |
-| 想装回官方版 | 用官方 `install.sh` 重装(会覆盖本 fork 二进制;词林等配置保留) |
+下载后赋予执行权限并将文件移动至你的 PATH 路径下即可。
 
 ---
 
-## 五、更新渠道说明(本 fork 内置)
+## 4. 历史/离线自构建兼容脚本 (说明)
 
-- **默认渠道**:`https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/latest.json` + `https://github.com/jeikl/jeikcode/releases/download`(内置,无需配置);
-- **覆盖方式**(按优先级):环境变量 `JEIKCODE_UPDATE_MANIFEST_URL` / `JEIKCODE_UPDATE_DOWNLOAD_BASE` > config.toml `[config] update_manifest_url` / `update_download_base` > 内置;
-- 详见 `docs/release-tutorial.md` 与 `README-self.md`。
+在仓库 `scripts/` 下保留的兼容脚本：
+- `scripts/install-self.sh` / `scripts/install-self.ps1`：历史版本遗留入口，默认已重定向至 `JeikCode/JeikCode` 官方 `main` 分支源，支持通过 `JEIKCODE_MANIFEST_URL` 和 `JEIKCODE_DOWNLOAD_BASE` 环境变量指定自建内网镜像源。
+
+---
+
+## 5. 卸载与清理
+
+项目提供了完整的卸载清理脚本：
+- **Linux / macOS**：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/uninstall.sh | bash
+  ```
+- **Windows (PowerShell)**：
+  ```powershell
+  irm https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/uninstall.ps1 | iex
+  ```
+- **手动清理**：删除二进制文件 `$HOME/.local/bin/jeikcode` 及配置目录 `~/.jeikcode`。

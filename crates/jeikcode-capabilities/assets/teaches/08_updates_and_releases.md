@@ -10,9 +10,9 @@ JeikCode 采用集中式端点解析机制（位于 `crates/jeikcode-config/src/
 
 | 配置项 | 默认地址 (Default URL) | 环境变量覆盖 (Env Override) | 用途说明 |
 | :--- | :--- | :--- | :--- |
-| **版本清单 (Manifest)** | `https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/latest.json` | `JEIKCODE_UPDATE_MANIFEST_URL` | 包含最新版本号、发布时间、全平台 SHA256 校验和与文件大小 |
-| **下载基址 (Download Base)** | `https://github.com/jeikl/jeikcode/releases/download` | `JEIKCODE_UPDATE_DOWNLOAD_BASE` | 发版二进制下载基址，拼接规则为 `{base}/{version}/{asset_name}` |
-| **官方代码仓 (Repository)** | `https://github.com/jeikl/jeikcode` | - | 官方源码、Issue 与 Release 追踪主页 |
+| **版本清单 (Manifest)** | `https://raw.githubusercontent.com/JeikCode/JeikCode/main/latest.json` | `JEIKCODE_UPDATE_MANIFEST_URL` | 包含最新版本号、发布时间、全平台 SHA256 校验和与文件大小 |
+| **下载基址 (Download Base)** | `https://github.com/JeikCode/JeikCode/releases/download` | `JEIKCODE_UPDATE_DOWNLOAD_BASE` | 发版二进制下载基址，拼接规则为 `{base}/{version}/{asset_name}` |
+| **官方代码仓 (Repository)** | `https://github.com/JeikCode/JeikCode` | - | 官方源码、Issue 与 Release 追踪主页 |
 
 ---
 
@@ -83,7 +83,7 @@ JeikCode 严格支持三层更新源配置裁决，优先顺序如下：
 ├────────────────────────────────────────────────────────┤
 │ 3. 编译期内置默认源 (官方 GitHub 仓库)                 │
 │    Manifest: https://raw.githubusercontent.com/...     │
-│    Download: https://github.com/jeikl/jeikcode/...     │
+│    Download: https://github.com/JeikCode/JeikCode/...  │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -97,10 +97,10 @@ JeikCode 严格支持三层更新源配置裁决，优先顺序如下：
 # ==============================================================================
 
 # 自定义版本清单 Manifest 地址 (JSON 格式)
-update_manifest_url = "https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/latest.json"
+update_manifest_url = "https://raw.githubusercontent.com/JeikCode/JeikCode/main/latest.json"
 
 # 自定义发版二进制下载基址 (会自动拼接 /<version>/<asset_name>)
-update_download_base = "https://github.com/jeikl/jeikcode/releases/download"
+update_download_base = "https://github.com/JeikCode/JeikCode/releases/download"
 
 # 是否在后台自动检测并预暂存更新 (默认 false，手动运行 /upgrade 随时可用)
 auto_update = false
@@ -136,42 +136,56 @@ $env:JEIKCODE_UPDATE_DOWNLOAD_BASE = "https://my-internal-repo.corp.com/jeikcode
 
 ---
 
-## 4. 编译发版与交叉编译标准流程
+## 4. 自动化流水线发版与 Release 规范
 
-发版前必须严格遵循以下构建链条：
+当前项目已全面收敛归一至 **GitHub Actions 一键打 Tag 自动化流水线**（定义于 `.github/workflows/build.yml`），无需手动在本地交叉编译。主干发布严格基于 `main` 分支，`local-dev` 仅作为历史特性兼容分支。
 
-### 4.1 生产前端构建 (WebUI)
+### 4.1 核心发版流程 (One-Tag Release)
+
+1. **更新版本元数据**：
+   - 升级 `Cargo.toml` 中 `[workspace.package].version` 为目标版本号（如 `7.0.1`）；
+   - 运行 `cargo check --workspace` 同步更新 `Cargo.lock` 中全部工作区依赖；
+   - 更新 `README.md`、`README.zh-CN.md`、`README.en.md` 中的版本徽章；
+   - 更新 `scripts/install.ps1`（`$DefaultVersion`）与 `scripts/install.sh`（`DEFAULT_VERSION`）；
+   - 更新 `latest.json` 中 `"version"` 为目标版本；
+2. **提交发布 Commit 并推送 `main` 分支**：
+   ```bash
+   git add Cargo.toml Cargo.lock README*.md scripts/install.* latest.json
+   git commit -m "release: v7.0.1 - 升级 workspace 版本与发版元数据"
+   git push origin main
+   ```
+3. **打 Tag 并推送触发 CI 流水线**：
+   ```bash
+   git tag v7.0.1
+   git push origin v7.0.1
+   ```
+4. **GitHub Actions 自动化流水线并行构建**：
+   - **前端构建**：`build-webui` 自动编译 SPA 并生成 `webui-dist` 静态资源包；
+   - **三端并发**：macOS (darwin-arm64, darwin-x64)、Linux (linux-arm64, linux-x64 static musl)、Windows (windows-arm64, windows-x64) 矩阵并发编译；
+   - **自动发布**：自动创建 GitHub Release `v7.0.1` 并归档 6 大平台二进制包。
+5. **（可选）补充自更新 SHA256 清单**：
+   流水线完成后，运行 `bash scripts/release-self-update.sh v7.0.1 JeikCode/JeikCode` 提取正式产物的 sha256 与 size 写回 `latest.json` 并推至 `main`。
+
+---
+
+## 5. 本地手动编译与调试备用流程
+
+若在离线环境或定制开发场景下需要手动编译二进制：
+
+### 5.1 生产前端构建 (WebUI)
 ```bash
 cd webui && npm run build
 ```
-*（必须在 Rust 编译前运行，产物位于 `webui/dist/`，通过 `rust_embed` 直接编译内嵌进二进制）*
+*(必须在 Rust 编译前运行，产物位于 `webui/dist/`，通过 `rust_embed` 直接编译内嵌进二进制)*
 
-### 4.2 Windows 本地 Release 编译
+### 5.2 Windows 本地 Release 编译
 ```powershell
 cargo build --release --bin jeikcode
 ```
 
-项目的 `.cargo/config.toml` 会让 `x86_64-pc-windows-gnu` 使用 PATH 中的完整 MinGW-w64 `gcc`/`ar`，而不是 Rustup 自带的精简 linker。构建机须安装完整 MinGW-w64（例如 WinLibs UCRT/POSIX），并确保其 `bin` 目录位于 PATH；可用 `where gcc` 与 `Test-Path <mingw-root>\x86_64-w64-mingw32\lib\libktmw32.a` 检查。缺少该库时，Windows 测试目标会在链接阶段报 `cannot find -lktmw32`。
-
-### 4.3 Windows 下交叉编译 Linux musl 静态二进制
-利用内置 Zig 工具链与 `.cargo/config.toml` 配置：
-```powershell
-$env:CC_x86_64_unknown_linux_musl = "E:\code\agents\jeikcode\tools\zig-cc.cmd"
-$env:CFLAGS_x86_64_unknown_linux_musl = "-fPIC"
-$env:AR_x86_64_unknown_linux_musl = "E:\code\agents\jeikcode\tools\zig-ar.cmd"
-cargo build --release --target x86_64-unknown-linux-musl --bin jeikcode
-```
-
-### 4.4 归档与 GitHub 发版
-```powershell
-# 1. 复制产物至 dist/ 目录并生成哈希
-Copy-Item .\target\release\jeikcode.exe .\dist\jeikcode-6.0.27-windows-x64.exe -Force
-Copy-Item .\target\release\jeikcode.exe .\dist\jeikcode-windows-x64.exe -Force
-Copy-Item .\target\x86_64-unknown-linux-musl\release\jeikcode .\dist\jeikcode-6.0.27-linux-x64 -Force
-Copy-Item .\target\x86_64-unknown-linux-musl\release\jeikcode .\dist\jeikcode-linux-x64 -Force
-
-# 2. 更新 latest.json 与 RELEASE_NOTES
-# 3. 使用 gh CLI 快速发布 Release
-gh release create 6.0.27 .\dist\jeikcode-6.0.27-windows-x64.exe .\dist\jeikcode-windows-x64.exe .\dist\jeikcode-6.0.27-linux-x64 .\dist\jeikcode-linux-x64 --repo jeikl/jeikcode --title "6.0.27" --notes-file .\dist\RELEASE_NOTES_6.0.27.md
+### 5.3 Linux 静态二进制编译 (通过 cargo-zigbuild)
+```bash
+cargo zigbuild --release --target x86_64-unknown-linux-musl --bin jeikcode
+cargo zigbuild --release --target aarch64-unknown-linux-musl --bin jeikcode
 ```
 

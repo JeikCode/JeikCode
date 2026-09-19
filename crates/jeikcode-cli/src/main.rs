@@ -1599,7 +1599,7 @@ async fn async_main() {
                 location.column()
             );
         }
-        eprintln!("\nPlease report this at: https://github.com/jeikl/jeikcode/issues");
+        eprintln!("\nPlease report this at: https://github.com/JeikCode/JeikCode/issues");
     }));
 
     match run().await {

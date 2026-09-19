@@ -1,18 +1,19 @@
-# JeikCode Self — fork 版一键安装(Windows / PowerShell)
+# JeikCode 兼容安装脚本 (Windows / PowerShell)
+# 注：推荐使用官方标准安装脚本 scripts/install.ps1
 #
-#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/scripts/install-self.ps1 | iex"
+#   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install-self.ps1 | iex"
 #
 # Env overrides:
-#   $env:JEIKCODE_VERSION    release tag(默认从 fork latest.json 检测)
+#   $env:JEIKCODE_VERSION    release tag(默认从 latest.json 检测)
 #   $env:JEIKCODE_PREFIX     安装目录(默认 $HOME\.local\bin)
 #   $env:JEIKCODE_MANIFEST_URL / $env:JEIKCODE_DOWNLOAD_BASE  覆盖更新渠道(可选)
 #
-# 与官方 install.ps1 结构一致,仅下载源指向 fork 的 local-dev 渠道。
+# 默认回退源已升级至 JeikCode/JeikCode 官方 main 渠道。
 
 $ErrorActionPreference = "Stop"
 
-$ManifestBase = if ($env:JEIKCODE_MANIFEST_URL) { $env:JEIKCODE_MANIFEST_URL.TrimEnd('/') } else { "https://raw.githubusercontent.com/jeikl/jeikcode/local-dev" }
-$RepoBase     = if ($env:JEIKCODE_DOWNLOAD_BASE) { $env:JEIKCODE_DOWNLOAD_BASE.TrimEnd('/') } else { "https://github.com/jeikl/jeikcode/releases/download" }
+$ManifestBase = if ($env:JEIKCODE_MANIFEST_URL) { $env:JEIKCODE_MANIFEST_URL.TrimEnd('/') } else { "https://raw.githubusercontent.com/JeikCode/JeikCode/main" }
+$RepoBase     = if ($env:JEIKCODE_DOWNLOAD_BASE) { $env:JEIKCODE_DOWNLOAD_BASE.TrimEnd('/') } else { "https://github.com/JeikCode/JeikCode/releases/download" }
 $DefaultVersion = "v0.0.0-dev.1"
 
 # --- detect platform ---

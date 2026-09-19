@@ -1,19 +1,20 @@
 #!/bin/sh
-# JeikCode Self — fork 版一键安装脚本(指向本 fork 的 local-dev 渠道)
+# JeikCode 兼容安装脚本 (POSIX sh)
+# 注：推荐使用官方标准安装脚本 scripts/install.sh
 #
-#   curl -fsSL https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/scripts/install-self.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install-self.sh | sh
 #
 # Env overrides:
 #   JEIKCODE_VERSION   release tag 安装(默认 latest; 格式 v0.0.0 需与 latest.json 一致)
 #   JEIKCODE_PREFIX    安装目录(默认 /usr/local/bin 可写则用,否则 ~/.local/bin; HarmonyOS 非 root → ~/.local/bin)
 #   JEIKCODE_MANIFEST_URL / JEIKCODE_DOWNLOAD_BASE  覆盖更新渠道(可选)
 #
-# 与官方 install.sh 结构一致(平台检测/PATH 写入/Windows 提示),仅下载源指向 fork。
+# 默认回退源已升级至 JeikCode/JeikCode 官方 main 渠道。
 set -eu
 
-# fork 渠道(默认: 本 fork 的 local-dev 分支 + releases)
-MANIFEST_BASE="${JEIKCODE_MANIFEST_URL:-https://raw.githubusercontent.com/jeikl/jeikcode/local-dev}"
-REPO_BASE="${JEIKCODE_DOWNLOAD_BASE:-https://github.com/jeikl/jeikcode/releases/download}"
+# 官方渠道(默认: JeikCode/JeikCode main 分支 + releases)
+MANIFEST_BASE="${JEIKCODE_MANIFEST_URL:-https://raw.githubusercontent.com/JeikCode/JeikCode/main}"
+REPO_BASE="${JEIKCODE_DOWNLOAD_BASE:-https://github.com/JeikCode/JeikCode/releases/download}"
 DEFAULT_VERSION="v0.0.0-dev.1"
 
 # --- detect platform ---
@@ -130,7 +131,7 @@ if [ "$os" = "windows" ]; then
     echo ""
     echo "Note: installed for this Unix shell (MSYS/MinGW/Git-Bash/Cygwin)."
     echo "      For a system-wide Windows install use instead:"
-    echo "      powershell -c \"irm https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/scripts/install-self.ps1 | iex\""
+    echo "      powershell -c \"irm https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install-self.ps1 | iex\""
 fi
 
 # --- PATH (与官方一致) ---

@@ -135,7 +135,7 @@ if [ "$os" = "windows" ]; then
     echo ""
     echo "Note: installed for this Unix shell (MSYS/MinGW/Git-Bash/Cygwin)."
     echo "      For a system-wide Windows install (cmd / PowerShell PATH), use instead:"
-    echo "      powershell -c \"irm https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/scripts/install.ps1 | iex\""
+    echo "      powershell -c \"irm https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install.ps1 | iex\""
 fi
 
 case ":$PATH:" in

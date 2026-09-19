@@ -74,3 +74,43 @@ CLI / TUI / daemon / background / ACP / clix
   - 提交正文（commit body）与 Trailer 之间必须保留一个空行；
   - 严禁遗漏该署名，严禁混用已废弃的历史旧品牌（如 AtomCode 等）署名。
 
+---
+
+## 6. 安装与自动化发版规范 (Installation & Release Pipeline)
+
+为了保证所有 Agent 与维护者在发版与部署时有唯一权威路径，严禁使用任何废弃的历史手动流程：
+
+### 6.1 组织、主干与兼容分支定位
+- **官方代码仓**：`https://github.com/JeikCode/JeikCode`；
+- **主干与发版基准 (`main`)**：所有正式发布、Tag 标签、在线安装脚本默认抓取与 `latest.json` 均严格以 `main` 分支为准；
+- **历史兼容分支 (`local-dev`)**：仅用于阶段性功能研发与向下兼容历史遗留脚本，不作为正式制品的发布依据。
+
+### 6.2 官方统一安装方式
+- **Linux / macOS / HarmonyOS PC**：
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install.sh | bash
+  ```
+- **Windows (PowerShell)**：
+  ```powershell
+  irm https://raw.githubusercontent.com/JeikCode/JeikCode/main/scripts/install.ps1 | iex
+  ```
+- **源码编译安装**：
+  ```bash
+  cd webui && npm run build && cd ..
+  cargo install --path crates/jeikcode-cli --bin jeikcode --locked
+  ```
+- 详见权威指南：[`docs/install-tutorial.md`](./docs/install-tutorial.md)。
+
+### 6.3 一键打 Tag 自动化发版流水线
+- **CI 触发源**：`.github/workflows/build.yml` 监听 `push: tags: - "v*"`；
+- **自动流水线流程**：
+  1. `build-webui` 自动编译 SPA 前端并打包为内嵌静态资源；
+  2. macOS、Linux (zigbuild musl 纯静态)、Windows 3 物理 Runner 并发编译 6 套目标架构二进制；
+  3. 通过 GitHub Actions 自动生成 Release 并上传 6 平台二进制包；
+- **标准发版执行闭环**：
+  1. 更新 `Cargo.toml`、`Cargo.lock` (`cargo check --workspace`)、`README*.md` 徽章、`scripts/install.*` 默认版本、`latest.json`；
+  2. 提交发版 commit 并推送到 `main` 分支；
+  3. 打 Tag 并推送触发流水线：`git tag vX.Y.Z && git push origin vX.Y.Z`；
+  4. 流水线构建完成后，执行 `bash scripts/release-self-update.sh vX.Y.Z JeikCode/JeikCode` 补全 `latest.json` 的 sha256 与 size 校验并推至 `main`；
+- 详见权威指南：[`docs/release-tutorial.md`](./docs/release-tutorial.md)。
+

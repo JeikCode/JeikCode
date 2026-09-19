@@ -1,160 +1,130 @@
-# JeikCode Self — 发版教程(发布新版本到你的仓库)
+# JeikCode 自动化发版与 Release 指南
 
-> 适用范围:本 fork(`jeikls/jeikcode`,维护分支 `local-dev`)的**版本发布**流程。
-> 发版后,所有已部署的机器(设了 `auto_update = true` 或手动 `jeikcode upgrade`)会自动从你的仓库**检测 → 下载 → SHA256 校验 → 备份替换 → 重启生效**。
->
-> 配套脚本:`scripts/release-self-update.sh`(交叉编译 + 生成 latest.json)。
-
----
-
-## 一、发版前置条件
-
-| 项 | 要求 |
-|---|---|
-| 本机 | 已 clone `jeikls/jeikcode`,能 `cargo build` |
-| 交叉编译 target | 需发几个平台就 `rustup target add` 几个(见下) |
-| 发布渠道账号 | 有 `jeikls/jeikcode` 仓库的 push / release 权限 |
-| 工具 | `python3`(生成 latest.json)、`gh` 或网页(上传 Release) |
-
-**可选 target 列表**(按需添加):
-
-```bash
-rustup target add x86_64-unknown-linux-gnu      # Linux x64
-rustup target add aarch64-unknown-linux-gnu     # Linux arm64
-rustup target add x86_64-apple-darwin           # macOS x64(需 macOS 或交叉工具链)
-rustup target add aarch64-apple-darwin          # macOS arm64
-rustup target add x86_64-pc-windows-msvc        # Windows x64
-# 鸿蒙(可选): rustup target add aarch64-unknown-linux-ohos
-```
-
-> 提示:macOS 交叉编译需要额外工具链;若只想发 Linux/Windows,删掉脚本里对应的
-> `build_target` 行即可,`latest.json` 只会包含实际生成的平台。
+> **核心原则**：当前项目已全面收敛归一至 **GitHub Actions 一键打 Tag 自动化流水线**（定义于 `.github/workflows/build.yml`）。
+> 官方代码仓为 **`JeikCode/JeikCode`**，主干发版与在线安装严格基于 **`main`** 分支（`local-dev` 仅为历史特性兼容分支）。
+> 禁止且无需在本地机器手动交叉编译二进制。
 
 ---
 
-## 二、发版步骤(标准流程)
+## 1. 发版流水线触发机制
 
-### 1. 更新版本号 + 提交
+项目内置了完整的全平台自动构建流水线，触发条件为：
+```yaml
+on:
+  push:
+    tags:
+      - "v*"
+```
+
+当向 GitHub 远程仓库推送任意 `v*` 格式的 Git Tag（如 `v7.0.1`）时，GitHub Actions 会自动启动以下矩阵作业：
+1. **前端预构建 (`build-webui`)**：
+   - 检出源码，在 `webui` 目录下执行 `npm run build`；
+   - 生成完整静态资源包并上传为 `webui-dist` 构件，作为后续各物理端编译时的内嵌依赖。
+2. **三端 6 平台矩阵编译**：
+   - **macOS Runner**：编译 `darwin-arm64`（Apple Silicon）与 `darwin-x64`（Intel）；
+   - **Linux Runner**：使用 `cargo-zigbuild` 编译纯静态 musl 二进制（`linux-arm64` 与 `linux-x64`），零动态 glibc 依赖，兼容所有 Linux 发行版与容器；
+   - **Windows Runner**：编译 `windows-arm64.exe` 与 `windows-x64.exe`。
+3. **自动发布 GitHub Release**：
+   - 使用 `softprops/action-gh-release@v2` 自动创建 Release 并上传 6 平台制品；
+   - 资产包命名规范：`jeikcode-<tag>-<platform>[.exe]`（例如 `jeikcode-v7.0.1-linux-x64`、`jeikcode-v7.0.1-windows-x64.exe`）。
+
+---
+
+## 2. 标准发版执行步骤 (Agent / 开发者通用)
+
+任何 Agent 或维护者发版时，严格按照以下 4 个阶段执行：
+
+### 阶段一：更新版本元数据
+
+修改以下关键文件的版本号（以升级至 `v7.0.1` 为例）：
+
+1. **`Cargo.toml`**：
+   ```toml
+   [workspace.package]
+   version = "7.0.1"
+   ```
+2. **`Cargo.lock`**：
+   运行编译检查，触发 Cargo 自动更新工作区所有 12 个 crate 的依赖版本：
+   ```bash
+   cargo check --workspace
+   ```
+3. **技术文档版本徽章**：
+   更新 `README.md`、`README.zh-CN.md`、`README.en.md` 中的徽章版本：
+   ```markdown
+   <img src="https://img.shields.io/badge/version-7.0.1-blue.svg" alt="version">
+   <img src="https://img.shields.io/badge/Releases-v7.0.1-00f2fe?style=for-the-badge&logo=github&logoColor=black" alt="Releases" />
+   ```
+4. **一键安装脚本默认版本**：
+   - `scripts/install.ps1`：`$DefaultVersion = "v7.0.1"`
+   - `scripts/install.sh`：`DEFAULT_VERSION="v7.0.1"`
+5. **客户端升级清单**：
+   - `latest.json`：更新 `"version": "v7.0.1"`，`"released_at"` 设为当天日期。
+
+---
+
+### 阶段二：提交发版 Commit 并合入 `main`
+
+按照规范创建发版提交，合并至主干 `main`：
 
 ```bash
-cd /path/to/jeikcode
-# 更新 workspace 版本(Cargo.toml workspace.package.version)
-# 例如: 0.0.0-dev.2
+# 1. 提交发版改动（必须严格遵循 Conventional Commits 与强制共同署名）
+git add Cargo.toml Cargo.lock README*.md scripts/install.* latest.json
+git commit -m "release: v7.0.1 - 升级 workspace 版本与发版元数据
 
-git add -A && git commit -m "release: 0.0.0-dev.2" && git push origin local-dev
-```
+- 升级 workspace 整体版本至 v7.0.1
+- 同步更新 Cargo.lock 所有 crate 依赖版本至 7.0.1
+- 更新 latest.json 清单与全套中英文技术文档版本徽章
+- 更新安装脚本默认下载与解析目标为 7.0.1
 
-> 版本号必须是**合法 semver**(如 `0.0.0-dev.2`、`1.2.3`),`is_newer` 按数字比较;
-> **不要**带 `v` 前缀进 version 字段(latest.json 的 `version` 是纯数字段)。
+Co-Authored-By: JeikCode <331041501+JeikCode@users.noreply.github.com>"
 
-### 2. 运行发版脚本
-
-```bash
-./scripts/release-self-update.sh 0.0.0-dev.2
-```
-
-脚本会:
-1. 交叉编译各平台 release 二进制到 `dist/`;
-2. 计算每个二进制的 `sha256` + `size`,生成 `latest.json`(只含实际编译出的平台);
-3. 打印下一步上传指引。
-
-输出示例:
-
-```
-==> 交叉编译 release 二进制(按需启用 target; 先 rustup target add <target>)
-    building x86_64-unknown-linux-gnu -> jeikcode-linux-x64
-    ...
-==> latest.json 已生成(5 个 target)
-    linux-x64: 12.3MB bytes, sha256 3f9a...
-```
-
-### 3. 上传 Release 资产
-
-```bash
-# 用 gh(推荐)
-gh release create 6.0.30 dist/* --title "v6.0.30"
-
-# 或用网页: 仓库 → Releases → Draft a new release → tag 6.0.30
-# 把 dist/ 下所有 jeikcode-* 文件与 sha256 拖上去
-```
-
-> **关键**:Release 的 **tag 名必须与版本号一致**(如 `6.0.30`),因为
-> updater 的下载 URL 是 `https://github.com/jeikl/jeikcode/releases/download/<version>/jeikcode-<version>-<target>(\.exe)`。
-
-### 4. 推送 latest.json 到 local-dev 分支
-
-```bash
-git add latest.json && git commit -m "release: 0.0.0-dev.2" && git push origin local-dev
-```
-
-> **关键**:updater 从 `https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/latest.json`
-> 读清单 —— **latest.json 必须推到 local-dev 分支**(不是 main,不是 Release 资产)。
-
-### 5. 验证
-
-`jeikcode` 与 `jeikcode` 是同一套 CLI（`jeikcode upgrade` = `jeikcode upgrade`）。Release 资产名仍是 `jeikcode-<version>-<target>`；安装/升级后会在同目录复制一份 `jeikcode` 别名。
-
-```bash
-# 本机模拟升级(会下载刚发的版本并替换当前二进制)
-jeikcode upgrade
-# 或
-jeikcode upgrade
-
-# 或检查清单可读
-curl -s https://raw.githubusercontent.com/jeikl/jeikcode/local-dev/latest.json | head -5
+# 2. 合入主干 main 分支并推送
+git checkout main
+git merge local-dev
+git push origin main
 ```
 
 ---
 
-## 三、latest.json 格式说明
+### 阶段三：打 Tag 推送，触发流水线
 
-```json
-{
-  "version": "0.0.0-dev.2",
-  "released_at": "2026-08-17",
-  "binaries": {
-    "darwin-arm64": { "sha256": "<sha256>", "size": 12345678 },
-    "darwin-x64":   { "sha256": "<sha256>", "size": 12345678 },
-    "linux-x64":    { "sha256": "<sha256>", "size": 12345678 },
-    "linux-arm64":  { "sha256": "<sha256>", "size": 12345678 },
-    "windows-x64":  { "sha256": "<sha256>", "size": 12345678 },
-    "ohos-arm64":   { "sha256": "<sha256>", "size": 12345678 }
-  }
-}
+从 `main` 上的发布提交打上版本 Tag 并推送至 GitHub：
+
+```bash
+# 创建 Tag 并推送到远程
+git tag v7.0.1
+git push origin v7.0.1
 ```
 
-- `binaries` 的 key 必须与 updater `detect_target()` 完全一致:`darwin-arm64/x64`、`linux-x64/arm64`、`windows-x64`、`ohos-arm64`;
-- `sha256` 必须与上传的二进制**完全一致**(升级时校验,不匹配拒收并自动回滚);
-- 只列出实际发布的平台即可(缺失平台 = 该平台不升级)。
+> **流水线观察**：访问 `https://github.com/JeikCode/JeikCode/actions` 观察进度，通常耗时 5~8 分钟完成全部 6 个平台的并行构建与归档。
 
 ---
 
-## 四、发版后的更新生效
+### 阶段四：发版后补充 SHA256 校验清单 (推荐)
 
-| 方式 | 触发时机 |
-|---|---|
-| **自动无感更新** | 机器上 `~/.jeikcode/config.toml` 设 `auto_update = true` → 每小时检测,发现新版本下载并暂存,下次启动应用 |
-| **手动更新** | 任何机器执行 `jeikcode upgrade`(走同一渠道) |
-| **强制重装** | `jeikcode upgrade --force` |
+流水线构建完成并在 Releases 页面生成资产后，可使用项目内置工具自动拉取真实产物的校验值并更新 `latest.json`：
 
-自动更新流程:检测 → 下载 → SHA256 校验 → 备份 `.bak` → 原子替换 → 重启生效。
-若新版本损坏,启动时自动回滚到 `.bak`(官方机制,自建渠道同样享受)。
+```bash
+# 自动抓取 Releases 页面资产的真实 sha256 与文件大小并写入 latest.json
+bash scripts/release-self-update.sh v7.0.1 JeikCode/JeikCode
 
----
+# 提交清单并推送至 main 分支
+git add latest.json
+git commit -m "fix(release): 补充 v7.0.1 官方发布制品 sha256 校验清单
 
-## 五、常见问题
+Co-Authored-By: JeikCode <331041501+JeikCode@users.noreply.github.com>"
+git push origin main
+```
 
-| 问题 | 原因 / 解决 |
-|---|---|
-| `jeikcode upgrade` 报 "already on latest" | 本地版本 ≥ latest.json 版本 → 确认 latest.json 已推 local-dev;或 `--force` |
-| 下载 404 | Release tag 或资产名与版本不一致(检查 §三 URL 拼法) |
-| 校验失败拒绝安装 | sha256 与上传二进制不匹配 → 重新生成 latest.json 再推 |
-| 某个平台不升级 | latest.json 缺该平台 entry → 用脚本重新生成(会包含实际编译的平台) |
-| 服务器无 `curl`/`wget` | 安装脚本需要其一;更新机制内部用 reqwest,与 shell 无关 |
+至此，新版本发布全部闭环，全网所有新老用户即可通过在线安装脚本或 `/upgrade` 立即升级。
 
 ---
 
-## 六、回滚
+## 3. 常见异常与排错指引
 
-- **升级后想退回上一版**:`jeikcode upgrade rollback`(官方机制,`/.bak` 切换);
-- **发错版本**:删掉对应 Release tag + 把 latest.json 改回上一版本并推 local-dev(机器会按版本号比较自动停在旧版)。
+| 问题现象 | 可能原因 | 解决办法 |
+| :--- | :--- | :--- |
+| 推送 Tag 后 Actions 未触发 | Tag 命名未以 `v` 开头 | 流水线规则要求 `v*`，请使用 `v7.0.1` 格式而非 `7.0.1` |
+| `build-webui` 报错 node/npm 异常 | `webui/package.json` 依赖损坏 | 本地先进入 `webui` 运行 `npm run build` 验证前端产物是否正常 |
+| 某个物理 Runner 编译超时或断网 | GitHub Runner 偶发网络抖动 | 在 GitHub Actions 页面对应 failed job 点击 `Re-run failed jobs` 即可 |
+| 发现严重 Bug 需要撤回发布 | 制品已公开需紧急止血 | 1. 登录 GitHub 网页编辑/删除该 Release；<br>2. 本地删除并推送删除 Tag：`git tag -d v7.0.1 && git push origin :refs/tags/v7.0.1` |
