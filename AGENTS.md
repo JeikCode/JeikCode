@@ -60,3 +60,17 @@ CLI / TUI / daemon / background / ACP / clix
 
 - 修改过程中优先运行单元测试；涉及多 crate 或公共协议变更时运行 `cargo check --workspace`；
 - 修改提示词、配置项或文档时，必须核对 `teaches/` 与实现代码的一致性。
+
+---
+
+## 5. Git 提交与共同署名规范 (Commit & Co-Authorship)
+
+- **强制附带共同署名**：任何由 Agent 生成或辅助生成的 Git 提交，提交信息（commit message）末尾必须严格包含 JeikCode 官方共同署名 Trailer：
+  ```text
+  Co-Authored-By: JeikCode <331041501+JeikCode@users.noreply.github.com>
+  ```
+- **格式规范**：
+  - 遵循 Conventional Commits 规范（例如 `feat(...)`, `fix(...)`, `refactor(...)`, `docs(...)` 等）；
+  - 提交正文（commit body）与 Trailer 之间必须保留一个空行；
+  - 严禁遗漏该署名，严禁混用已废弃的历史旧品牌（如 AtomCode 等）署名。
+
