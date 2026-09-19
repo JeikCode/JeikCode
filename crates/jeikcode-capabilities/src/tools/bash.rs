@@ -146,10 +146,6 @@ impl Tool for BashTool {
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "The command in the selected shell's native syntax. On Windows, send PowerShell cmdlets directly with shell=powershell; never nest powershell -Command inside the default shell." },
-                "description": {
-                    "type": "string",
-                    "description": "Optional human-readable explanation of what the command does."
-                },
                 "shell": {
                     "type": "string",
                     "enum": shell_values,
