@@ -28,6 +28,7 @@ export function toolCategory(name: string): ToolCategory {
     case 'code_explore':
       return 'search';
     case 'bash':
+    case 'run_command':
       return 'terminal';
     case 'web_fetch':
     case 'web_search':
@@ -92,6 +93,7 @@ export function toolRendersAsDiff(name: string): boolean {
     case 'search_replace':
     case 'parallel_edit_files':
     case 'bash':
+    case 'run_command':
       return true;
     default:
       return false;
@@ -400,6 +402,17 @@ export function formatToolPayload(raw: string): string {
 export function prettyToolText(raw: string): { text: string; lang: 'json' | 'text' } {
   if (!raw) return { text: '', lang: 'text' };
   const parsed = tryParseJson(raw);
+  if (parsed !== undefined && typeof parsed === 'object' && parsed !== null) {
+    const copy = { ...(parsed as Record<string, unknown>) };
+    if (
+      typeof copy.description === 'string' &&
+      typeof copy.command === 'string' &&
+      copy.description.trim() === copy.command.trim()
+    ) {
+      delete copy.description;
+    }
+    return { text: JSON.stringify(copy, null, 2), lang: 'json' };
+  }
   if (parsed !== undefined) {
     return { text: JSON.stringify(parsed, null, 2), lang: 'json' };
   }
