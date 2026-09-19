@@ -56,15 +56,41 @@ pub(crate) fn command_max_timeout_secs() -> u64 {
 #[derive(Default)]
 pub struct BashTool;
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct Args {
+    #[serde(default)]
     command: String,
+    #[serde(default)]
+    description: Option<String>,
     #[serde(default)]
     shell: ShellMode,
     #[serde(default)]
     background: bool,
     #[serde(default = "default_settle_secs")]
     settle_secs: Option<u64>,
+}
+
+fn parse_args(args: &str) -> Result<Args, serde_json::Error> {
+    let mut a = serde_json::from_str::<Args>(args)?;
+    if a.command.trim().is_empty() {
+        if let Some(desc) = a.description.take() {
+            let trimmed = desc.trim();
+            let clean = trimmed
+                .strip_prefix("Run: ")
+                .or_else(|| trimmed.strip_prefix("Run "))
+                .or_else(|| trimmed.strip_prefix("Execute: "))
+                .or_else(|| trimmed.strip_prefix("Execute "))
+                .or_else(|| trimmed.strip_prefix("执行: "))
+                .or_else(|| trimmed.strip_prefix("执行 "))
+                .or_else(|| trimmed.strip_prefix("运行: "))
+                .or_else(|| trimmed.strip_prefix("运行 "))
+                .unwrap_or(trimmed);
+            if !clean.is_empty() {
+                a.command = clean.to_string();
+            }
+        }
+    }
+    Ok(a)
 }
 
 fn default_settle_secs() -> Option<u64> {
@@ -120,6 +146,10 @@ impl Tool for BashTool {
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "The command in the selected shell's native syntax. On Windows, send PowerShell cmdlets directly with shell=powershell; never nest powershell -Command inside the default shell." },
+                "description": {
+                    "type": "string",
+                    "description": "Optional human-readable explanation of what the command does."
+                },
                 "shell": {
                     "type": "string",
                     "enum": shell_values,
@@ -142,7 +172,7 @@ impl Tool for BashTool {
     }
     fn risk(&self, args: &str) -> RiskLevel {
         // Parse the command out of args; a parse failure is conservatively Risky.
-        match serde_json::from_str::<Args>(args) {
+        match parse_args(args) {
             Ok(a) => {
                 if check_destructive_command(&command_for_policy(&a)).is_some() {
                     RiskLevel::Risky
@@ -159,7 +189,7 @@ impl Tool for BashTool {
     /// deliberate. Normalizing means a cosmetic re-emit of the SAME command (changed trailing
     /// `# comment`, added whitespace) keeps the grant instead of re-prompting every turn.
     fn always_grant_scope(&self, args: &str) -> String {
-        match serde_json::from_str::<Args>(args) {
+        match parse_args(args) {
             Ok(a) => match a.shell {
                 ShellMode::Default => normalize_command_for_grant(&a.command),
                 ShellMode::Powershell => {
@@ -174,18 +204,23 @@ impl Tool for BashTool {
     /// independently and the first to finish can show done while others run.
     /// Destructive commands still take the write lock. Parse failure is not parallel-safe.
     fn parallel_safe(&self, args: &str) -> bool {
-        match serde_json::from_str::<Args>(args) {
+        match parse_args(args) {
             Ok(a) => check_destructive_command(&command_for_policy(&a)).is_none(),
             Err(_) => false,
         }
     }
     async fn execute(&self, args: &str, ctx: &ToolContext) -> ToolResult {
-        let a: Args = match serde_json::from_str(args) {
-            Ok(a) => a,
+        let a: Args = match parse_args(args) {
+            Ok(a) if !a.command.trim().is_empty() => a,
+            Ok(_) => {
+                return err(
+                    "run_command: 'command' argument is required and cannot be empty. Please provide the shell command to execute in the 'command' field.".to_string(),
+                );
+            }
             Err(e) => {
                 return err(format!(
                     "run_command: invalid arguments: {e}. Expected {{\"command\":\"<shell command>\"}}."
-                ))
+                ));
             }
         };
         if a.shell == ShellMode::Default {
@@ -4816,6 +4851,25 @@ mod tests {
         assert_eq!(parse_reg_install_path(spaced), Some(r"D:\my apps\Git"));
         // No value line → None.
         assert_eq!(parse_reg_install_path("ERROR: key not found\r\n"), None);
+    }
+
+    #[test]
+    fn parse_args_description_fallback_and_prefix_stripping() {
+        // Fallback when command is omitted and description has "Run: " prefix
+        let raw = r#"{"description": "Run: git diff"}"#;
+        let a = parse_args(raw).expect("parse ok");
+        assert_eq!(a.command, "git diff");
+
+        // Fallback when command is empty string and description has Chinese prefix
+        let raw_cn = r#"{"command": "", "description": "执行: cargo check"}"#;
+        let a_cn = parse_args(raw_cn).expect("parse ok");
+        assert_eq!(a_cn.command, "cargo check");
+
+        // Normal case with both command and description
+        let raw_both = r#"{"command": "git status", "description": "Check status"}"#;
+        let a_both = parse_args(raw_both).expect("parse ok");
+        assert_eq!(a_both.command, "git status");
+        assert_eq!(a_both.description.as_deref(), Some("Check status"));
     }
 
     #[test]

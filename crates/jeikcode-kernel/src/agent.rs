@@ -749,6 +749,7 @@ struct ToolLoopState {
     policy: ToolLoopPolicy,
     last: Option<ToolLoopFingerprint>,
     consecutive: u32,
+    history: std::collections::VecDeque<ToolLoopFingerprint>,
 }
 
 impl ToolLoopState {
@@ -757,29 +758,49 @@ impl ToolLoopState {
             policy,
             last: None,
             consecutive: 0,
+            history: std::collections::VecDeque::with_capacity(10),
         }
     }
 
     fn reset(&mut self) {
         self.last = None;
         self.consecutive = 0;
+        self.history.clear();
     }
 
     fn observe(&mut self, fingerprint: ToolLoopFingerprint) -> ToolLoopDecision {
         if self.last.as_ref() == Some(&fingerprint) {
             self.consecutive = self.consecutive.saturating_add(1);
         } else {
-            self.last = Some(fingerprint);
+            self.last = Some(fingerprint.clone());
             self.consecutive = 1;
         }
 
-        if self.consecutive >= self.policy.stop_threshold {
-            ToolLoopDecision::Stop
-        } else if self.consecutive == self.policy.warning_threshold {
-            ToolLoopDecision::Warn
-        } else {
-            ToolLoopDecision::Continue
+        if self.history.len() >= 10 {
+            self.history.pop_front();
         }
+        self.history.push_back(fingerprint);
+
+        if self.consecutive >= self.policy.stop_threshold {
+            return ToolLoopDecision::Stop;
+        } else if self.consecutive == self.policy.warning_threshold {
+            return ToolLoopDecision::Warn;
+        }
+
+        let len = self.history.len();
+        if len >= 4 {
+            let a = &self.history[len - 4];
+            let b = &self.history[len - 3];
+            let c = &self.history[len - 2];
+            let d = &self.history[len - 1];
+            if a == c && b == d && a != b {
+                if len >= 6 && self.history[len - 6] == *a && self.history[len - 5] == *b {
+                    return ToolLoopDecision::Stop;
+                }
+                return ToolLoopDecision::Warn;
+            }
+        }
+        ToolLoopDecision::Continue
     }
 }
 
@@ -6103,5 +6124,35 @@ mod synthetic_send_tests {
 
         handle.commands.send(AgentCommand::Shutdown).unwrap();
         let _ = handle.task.await;
+    }
+
+    #[test]
+    fn tool_loop_state_detects_period_two_oscillation() {
+        let mut state = ToolLoopState::new(ToolLoopPolicy::default());
+        let fp1 = ToolLoopFingerprint {
+            calls: vec![ToolLoopCallFingerprint {
+                tool_name: "read_probe".into(),
+                canonical_arguments: r#"{"q":"1"}"#.into(),
+                effective_cwd: std::path::PathBuf::from("/tmp"),
+                result_content: "r1".into(),
+                is_error: false,
+            }],
+        };
+        let fp2 = ToolLoopFingerprint {
+            calls: vec![ToolLoopCallFingerprint {
+                tool_name: "run_probe".into(),
+                canonical_arguments: r#"{"cmd":"check"}"#.into(),
+                effective_cwd: std::path::PathBuf::from("/tmp"),
+                result_content: "r2".into(),
+                is_error: false,
+            }],
+        };
+
+        assert_eq!(state.observe(fp1.clone()), ToolLoopDecision::Continue);
+        assert_eq!(state.observe(fp2.clone()), ToolLoopDecision::Continue);
+        assert_eq!(state.observe(fp1.clone()), ToolLoopDecision::Continue);
+        assert_eq!(state.observe(fp2.clone()), ToolLoopDecision::Warn);
+        assert_eq!(state.observe(fp1.clone()), ToolLoopDecision::Warn);
+        assert_eq!(state.observe(fp2.clone()), ToolLoopDecision::Stop);
     }
 }

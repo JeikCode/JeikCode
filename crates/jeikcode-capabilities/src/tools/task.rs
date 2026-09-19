@@ -1664,7 +1664,7 @@ mod tests {
     fn worker_scope_gate_denies_workspace_escape_and_absolute_outside() {
         use super::WorkerScopeGate;
         use std::path::Path;
-        let g = WorkerScopeGate::new(&["**".into()], Path::new("/w"));
+        let g = WorkerScopeGate::new(&["**".into()], Path::new("/workspace"));
         // `**` allows anything INSIDE the workspace
         assert!(g
             .violation("write_file", r#"{"file_path":"anything/here.rs"}"#)
@@ -1679,7 +1679,7 @@ mod tests {
             .is_some());
         // an absolute path INSIDE the working dir is normalized + allowed
         assert!(g
-            .violation("write_file", r#"{"file_path":"/w/in.rs"}"#)
+            .violation("write_file", r#"{"file_path":"/workspace/in.rs"}"#)
             .is_none());
     }
 

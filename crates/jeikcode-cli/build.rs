@@ -140,7 +140,7 @@ fn sync_user_home_assets_if_present() {
                             continue;
                         }
                         let target = dest.join(fname);
-                        let _ = std::fs::copy(&p, &target);
+                        copy_if_newer(&p, &target);
                         println!("cargo:rerun-if-changed={}", p.display());
                     }
                 }
@@ -159,7 +159,7 @@ fn sync_user_home_assets_if_present() {
                 if p.is_file() {
                     if let Some(fname) = p.file_name() {
                         let target = dest.join(fname);
-                        let _ = std::fs::copy(&p, &target);
+                        copy_if_newer(&p, &target);
                         println!("cargo:rerun-if-changed={}", p.display());
                     }
                 }
@@ -178,7 +178,7 @@ fn sync_user_home_assets_if_present() {
                 if p.is_file() {
                     if let Some(fname) = p.file_name() {
                         let target = dest.join(fname);
-                        let _ = std::fs::copy(&p, &target);
+                        copy_if_newer(&p, &target);
                         println!("cargo:rerun-if-changed={}", p.display());
                     }
                 }
@@ -211,7 +211,7 @@ fn sync_user_home_assets_if_present() {
             if let Some(parent) = dest.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::copy(&src, &dest);
+            copy_if_newer(&src, &dest);
             println!("cargo:rerun-if-changed={}", src.display());
         }
     }
@@ -231,4 +231,24 @@ fn default_jeikcode_home() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from(".jeikcode")
+}
+
+fn copy_if_newer(src: &std::path::Path, dest: &std::path::Path) {
+    if !dest.exists() {
+        let _ = std::fs::copy(src, dest);
+        return;
+    }
+    if let (Ok(s), Ok(d)) = (std::fs::read(src), std::fs::read(dest)) {
+        if s == d {
+            return;
+        }
+    }
+    if let (Ok(sm), Ok(dm)) = (
+        std::fs::metadata(src).and_then(|m| m.modified()),
+        std::fs::metadata(dest).and_then(|m| m.modified()),
+    ) {
+        if sm > dm {
+            let _ = std::fs::copy(src, dest);
+        }
+    }
 }

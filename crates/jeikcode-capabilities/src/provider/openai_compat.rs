@@ -3332,11 +3332,11 @@ mod tests {
         );
         assert_eq!(
             friendly_http_error(403, "user has no codingplan"),
-            "CodingPlan 未领取或已失效（HTTP 403）。请用 /provider 配置有效的 API Key。"
+            "CodingPlan 未领取或已失效（HTTP 403）。请运行 /login 重新登录并领取 CodingPlan。"
         );
         assert_eq!(
             friendly_http_error(403, "USER HAS NO CODINGPLAN"),
-            "CodingPlan 未领取或已失效（HTTP 403）。请用 /provider 配置有效的 API Key。"
+            "CodingPlan 未领取或已失效（HTTP 403）。请运行 /login 重新登录并领取 CodingPlan。"
         );
         assert!(friendly_http_error(401, "").contains("API key"));
         // 429 is NOT wrapped (kernel rate-limit path owns it — must keep the
@@ -3789,8 +3789,8 @@ mod tests {
             "gateway cache-affinity header must be forwarded: {head}"
         );
         assert!(
-            !head.contains("x-jeikcode-session-id"),
-            "legacy jeikcode session header must not be sent: {head}"
+            !head.contains("x-atomcode-session-id"),
+            "legacy atomcode session header must not be sent: {head}"
         );
         assert!(
             head.contains("user-agent: jeikcode/9.9.9"),
