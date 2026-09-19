@@ -39,9 +39,10 @@ jobs:
           path: webui/dist/
           if-no-files-found: error
 
-  build-macos:
+  # --- Windows 构建：优先放置且 x86_64 优先编译发布 ---
+  build-windows:
     needs: [build-webui]
-    runs-on: macos-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -56,37 +57,50 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add macOS targets
+      - name: Add Windows targets (x86_64 first)
         run: |
-          rustup target add aarch64-apple-darwin
-          rustup target add x86_64-apple-darwin
+          rustup target add x86_64-pc-windows-msvc
+          rustup target add aarch64-pc-windows-msvc
 
-      - name: Build ARM64
-        run: cargo build --release --target aarch64-apple-darwin
+      # 1. 优先编译 Windows x86_64
+      - name: Build Windows x86_64
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
-      - name: Build x86_64
-        run: cargo build --release --target x86_64-apple-darwin
-
-      - name: Prepare binaries
+      - name: Prepare Windows x86_64 binary
+        shell: bash
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           mkdir -p dist
-          cp target/aarch64-apple-darwin/release/jeikcode dist/jeikcode-${TAG_NAME}-darwin-arm64
-          cp target/x86_64-apple-darwin/release/jeikcode dist/jeikcode-${TAG_NAME}-darwin-x64
-          chmod +x dist/*
+          cp target/x86_64-pc-windows-msvc/release/jeikcode.exe dist/jeikcode-${TAG_NAME}-windows-x64.exe
 
-      - name: Strip binaries
-        run: |
-          strip dist/* || true
-
-      - name: Release macOS Binaries
+      - name: Release Windows x86_64 Binary
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: dist/jeikcode-*-windows-x64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 2. 次级编译 Windows ARM64
+      - name: Build Windows ARM64
+        run: cargo build --release --target aarch64-pc-windows-msvc
+
+      - name: Prepare Windows ARM64 binary
+        shell: bash
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          mkdir -p dist
+          cp target/aarch64-pc-windows-msvc/release/jeikcode.exe dist/jeikcode-${TAG_NAME}-windows-arm64.exe
+
+      - name: Release Windows ARM64 Binary
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/jeikcode-*-windows-arm64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # --- Linux 构建：x86_64 优先编译发布 ---
   build-linux:
     needs: [build-webui]
     runs-on: ubuntu-latest
@@ -108,42 +122,55 @@ jobs:
         run: |
           pip install cargo-zigbuild ziglang
 
-      - name: Add Linux targets
+      - name: Add Linux targets (x86_64 first)
         run: |
           rustup target add x86_64-unknown-linux-musl
           rustup target add aarch64-unknown-linux-musl
 
-      - name: Build x86_64
+      # 1. 优先编译 Linux x86_64
+      - name: Build Linux x86_64
         run: cargo zigbuild --release --target x86_64-unknown-linux-musl
 
-      - name: Build ARM64
-        run: cargo zigbuild --release --target aarch64-unknown-linux-musl
-
-      - name: Prepare binaries
+      - name: Prepare and Strip Linux x86_64 binary
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           mkdir -p dist
           cp target/x86_64-unknown-linux-musl/release/jeikcode dist/jeikcode-${TAG_NAME}-linux-x64
-          cp target/aarch64-unknown-linux-musl/release/jeikcode dist/jeikcode-${TAG_NAME}-linux-arm64
           chmod +x dist/*
-
-      - name: Strip binaries
-        run: |
-          TAG_NAME=${GITHUB_REF#refs/tags/}
           strip dist/jeikcode-${TAG_NAME}-linux-x64 || true
-          strip dist/jeikcode-${TAG_NAME}-linux-arm64 || true
 
-      - name: Release Linux Binaries
+      - name: Release Linux x86_64 Binary
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: dist/jeikcode-*-linux-x64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-windows:
+      # 2. 次级编译 Linux ARM64
+      - name: Build Linux ARM64
+        run: cargo zigbuild --release --target aarch64-unknown-linux-musl
+
+      - name: Prepare and Strip Linux ARM64 binary
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-musl/release/jeikcode dist/jeikcode-${TAG_NAME}-linux-arm64
+          chmod +x dist/*
+          strip dist/jeikcode-${TAG_NAME}-linux-arm64 || true
+
+      - name: Release Linux ARM64 Binary
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/jeikcode-*-linux-arm64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # --- macOS 构建：x86_64 优先编译发布 ---
+  build-macos:
     needs: [build-webui]
-    runs-on: windows-latest
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
@@ -158,30 +185,48 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Add Windows targets
+      - name: Add macOS targets (x86_64 first)
         run: |
-          rustup target add aarch64-pc-windows-msvc
-          rustup target add x86_64-pc-windows-msvc
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
 
-      - name: Build ARM64
-        run: cargo build --release --target aarch64-pc-windows-msvc
+      # 1. 优先编译 macOS x86_64 (Intel)
+      - name: Build macOS x86_64
+        run: cargo build --release --target x86_64-apple-darwin
 
-      - name: Build x86_64
-        run: cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Prepare binaries
-        shell: bash
+      - name: Prepare and Strip macOS x86_64 binary
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           mkdir -p dist
-          cp target/aarch64-pc-windows-msvc/release/jeikcode.exe dist/jeikcode-${TAG_NAME}-windows-arm64.exe
-          cp target/x86_64-pc-windows-msvc/release/jeikcode.exe dist/jeikcode-${TAG_NAME}-windows-x64.exe
+          cp target/x86_64-apple-darwin/release/jeikcode dist/jeikcode-${TAG_NAME}-darwin-x64
+          chmod +x dist/*
+          strip dist/jeikcode-${TAG_NAME}-darwin-x64 || true
 
-      - name: Release Windows Binaries
+      - name: Release macOS x86_64 Binary
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: dist/jeikcode-*-darwin-x64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. 次级编译 macOS ARM64 (Apple Silicon)
+      - name: Build macOS ARM64
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Prepare and Strip macOS ARM64 binary
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/jeikcode dist/jeikcode-${TAG_NAME}-darwin-arm64
+          chmod +x dist/*
+          strip dist/jeikcode-${TAG_NAME}-darwin-arm64 || true
+
+      - name: Release macOS ARM64 Binary
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/jeikcode-*-darwin-arm64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
