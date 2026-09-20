@@ -247,9 +247,8 @@ export function shouldKeepCachedTranscript(input: {
   turnActive: boolean;
 }): boolean {
   if (input.cacheLen <= 0) return false;
-  if (input.turnActive && input.cacheInFlight) return true;
   if (input.cacheLen > input.diskLen) return true;
-  return input.turnActive && input.cacheInFlight && input.cacheLen >= input.diskLen;
+  return input.turnActive && (input.cacheInFlight || input.cacheLen >= input.diskLen);
 }
 
 /** This tab started the turn or is attached to its live stream. */

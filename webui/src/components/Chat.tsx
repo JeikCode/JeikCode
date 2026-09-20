@@ -1877,12 +1877,13 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
         let resumeClockFrom: number | undefined;
         const currentCached = messageCacheRef.current.get(loadId);
         const isLiveSession =
-          liveSessionIdRef.current === loadId ||
-          liveSyncOwnsViewedSession({
-            sync: syncRef.current,
-            viewedSessionId: loadId,
-            liveSessionId: liveSessionIdRef.current,
-          });
+          syncRef.current &&
+          (liveSessionIdRef.current === loadId ||
+            liveSyncOwnsViewedSession({
+              sync: syncRef.current,
+              viewedSessionId: loadId,
+              liveSessionId: liveSessionIdRef.current,
+            }));
         if (sessionResult.status === 'fulfilled' && sessionResult.value && Array.isArray(sessionResult.value.messages)) {
           const preferred = sessionResult.value.preferred_model;
           if (preferred) {
@@ -2008,17 +2009,22 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
             type: 'active_check_succeeded',
             active: shouldLockSendAsDetached({ turnActive: active, thisTabOwnsTurn: ownsTurn }),
           });
-          if (active && !isLiveSession) {
+          if (active) {
             backgroundRunningSessionsRef.current.add(loadId);
-            requestIdRef.current = loadId;
-            setQueued([]);
-            if (!ownsTurn && (!currentCached || currentCached.length === 0)) {
-              nextHint = t('chat.detachedActive');
+            onLiveRunningChange?.(loadId, true);
+            setBusyAndClock(true);
+            busyRef.current = true;
+            if (!isLiveSession) {
+              requestIdRef.current = loadId;
+              setQueued([]);
+              if (!ownsTurn && (!currentCached || currentCached.length === 0)) {
+                nextHint = t('chat.detachedActive');
+              }
+              adoptTurnUserTs(resumeClockFrom);
+              startDetachedHistoryPoll(projectHash, loadId, loadGeneration, {
+                localReattach: ownsTurn,
+              });
             }
-            adoptTurnUserTs(resumeClockFrom);
-            startDetachedHistoryPoll(projectHash, loadId, loadGeneration, {
-              localReattach: ownsTurn,
-            });
           } else if (!active) {
             // Sidebar switch used a stale local/background running flag. But if the
             // session is an active liveSession and local state still has it running,
