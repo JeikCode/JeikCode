@@ -2,10 +2,9 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
+      - "[0-9]+.*"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -14,7 +13,34 @@ permissions:
   contents: write
 
 jobs:
+  # --- 前置门禁：严格检查当前版本是否大于上一个发布版本，不大于则直接终止流水线 ---
+  check-version:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check version gate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          node scripts/check-version-gate.js "$TAG_NAME" "$REPO"
+
   build-webui:
+    needs: [check-version]
+    if: |
+      always() &&
+      (needs.check-version.result == 'success' || !startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
 
     steps:
@@ -49,6 +75,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download WebUI dist
         uses: actions/download-artifact@v4
@@ -58,12 +87,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      # 启用持久化构建与依赖缓存（秒级复用已编译依赖）
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: "windows"
 
       - name: Add Windows targets (x86_64 first)
         run: |
@@ -120,6 +143,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 3. 立即更新 Windows 平台版本与 latest.json 校验清单（无需等待其他平台！）
+      - name: Update Windows platform manifest immediately
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          node scripts/update-platform-manifest.js "$TAG_NAME" \
+            "windows-x64:dist/jeikcode-${TAG_NAME}-windows-x64.exe" \
+            "windows-arm64:dist/jeikcode-${TAG_NAME}-windows-arm64.exe"
+
   # --- Linux 构建：x86_64 优先编译发布 ---
   build-linux:
     needs: [build-webui]
@@ -128,6 +163,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download WebUI dist
         uses: actions/download-artifact@v4
@@ -137,12 +175,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      # 启用持久化构建与依赖缓存（秒级复用已编译依赖）
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: "linux"
 
       - name: Install cross-compilation tools
         run: |
@@ -204,6 +236,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 3. 立即更新 Linux 平台版本与 latest.json 校验清单（无需等待其他平台！）
+      - name: Update Linux platform manifest immediately
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          node scripts/update-platform-manifest.js "$TAG_NAME" \
+            "linux-x64:dist/jeikcode-${TAG_NAME}-linux-x64" \
+            "linux-arm64:dist/jeikcode-${TAG_NAME}-linux-arm64"
+
   # --- macOS 构建：x86_64 优先编译发布 ---
   build-macos:
     needs: [build-webui]
@@ -212,6 +255,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download WebUI dist
         uses: actions/download-artifact@v4
@@ -221,12 +267,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      # 启用持久化构建与依赖缓存（秒级复用已编译依赖）
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: "macos"
 
       - name: Add macOS targets (x86_64 first)
         run: |
@@ -284,6 +324,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # 3. 立即更新 macOS 平台版本与 latest.json 校验清单（无需等待其他平台！）
+      - name: Update macOS platform manifest immediately
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          node scripts/update-platform-manifest.js "$TAG_NAME" \
+            "darwin-x64:dist/jeikcode-${TAG_NAME}-darwin-x64" \
+            "darwin-arm64:dist/jeikcode-${TAG_NAME}-darwin-arm64"
+
+  # --- Linux distro-pm 包管理工具兼容性测试门禁 ---
   distro-pm-check:
     needs: [build-webui]
     runs-on: ubuntu-latest
@@ -301,55 +353,8 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # 启用持久化构建与依赖缓存
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: "distro-pm"
-
       - name: Build with distro-pm feature
         run: cargo build -p jeikcode --features distro-pm
 
       - name: Test distro-pm gating
         run: cargo test -p jeikcode-updater --lib --features distro-pm
-
-  # --- 自动化收尾：自动提取 6 平台真实 SHA256/文件大小并更新 latest.json ---
-  update-manifest:
-    needs: [build-windows, build-linux, build-macos]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-
-    steps:
-      - name: Checkout main branch
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Fetch release assets and update repository metadata
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          node scripts/update-manifest.js
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Update Cargo.lock
-        run: |
-          cargo check -p jeikcode-updater
-
-      - name: Commit and push all updated release files to main
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock README*.md scripts/install.* latest.json
-          git diff --staged --quiet || (git commit -m "chore(release): 自动同步 ${{ github.ref_name }} 版本号与 SHA256 校验清单 [skip ci]" && git push origin main)
