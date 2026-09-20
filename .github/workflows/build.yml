@@ -127,7 +127,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. 次级编译 Windows ARM64
+      # 2. 立即更新 Windows x86_64 平台版本与 latest.json 校验清单（无需等待 ARM64 或其他平台！）
+      - name: Update Windows x86_64 platform manifest immediately
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          node scripts/update-platform-manifest.js "$TAG_NAME" \
+            "windows-x64:dist/jeikcode-${TAG_NAME}-windows-x64.exe"
+
+      # 3. 次级编译 Windows ARM64
       - name: Build Windows ARM64
         run: cargo build --release --target aarch64-pc-windows-msvc
 
@@ -147,16 +159,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3. 立即更新 Windows 平台版本与 latest.json 校验清单（无需等待其他平台！）
-      - name: Update Windows platform manifest immediately
+      # 4. 立即更新 Windows ARM64 平台版本与 latest.json 校验清单
+      - name: Update Windows ARM64 platform manifest immediately
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           node scripts/update-platform-manifest.js "$TAG_NAME" \
-            "windows-x64:dist/jeikcode-${TAG_NAME}-windows-x64.exe" \
             "windows-arm64:dist/jeikcode-${TAG_NAME}-windows-arm64.exe"
 
   # --- Linux 构建：x86_64 优先编译发布 ---
@@ -219,7 +231,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. 次级编译 Linux ARM64
+      # 2. 立即更新 Linux x86_64 平台版本与 latest.json 校验清单（无需等待 ARM64 或其他平台！）
+      - name: Update Linux x86_64 platform manifest immediately
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          node scripts/update-platform-manifest.js "$TAG_NAME" \
+            "linux-x64:dist/jeikcode-${TAG_NAME}-linux-x64"
+
+      # 3. 次级编译 Linux ARM64
       - name: Build Linux ARM64
         run: cargo zigbuild --release --target aarch64-unknown-linux-musl
 
@@ -240,15 +263,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3. 立即更新 Linux 平台版本与 latest.json 校验清单（无需等待其他平台！）
-      - name: Update Linux platform manifest immediately
+      # 4. 立即更新 Linux ARM64 平台版本与 latest.json 校验清单
+      - name: Update Linux ARM64 platform manifest immediately
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           node scripts/update-platform-manifest.js "$TAG_NAME" \
-            "linux-x64:dist/jeikcode-${TAG_NAME}-linux-x64" \
             "linux-arm64:dist/jeikcode-${TAG_NAME}-linux-arm64"
 
   # --- macOS 构建：x86_64 优先编译发布 ---
@@ -307,7 +330,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2. 次级编译 macOS ARM64 (Apple Silicon)
+      # 2. 立即更新 macOS x86_64 平台版本与 latest.json 校验清单（无需等待 ARM64 或其他平台！）
+      - name: Update macOS x86_64 platform manifest immediately
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          node scripts/update-platform-manifest.js "$TAG_NAME" \
+            "darwin-x64:dist/jeikcode-${TAG_NAME}-darwin-x64"
+
+      # 3. 次级编译 macOS ARM64 (Apple Silicon)
       - name: Build macOS ARM64
         run: cargo build --release --target aarch64-apple-darwin
 
@@ -328,15 +362,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3. 立即更新 macOS 平台版本与 latest.json 校验清单（无需等待其他平台！）
-      - name: Update macOS platform manifest immediately
+      # 4. 立即更新 macOS ARM64 平台版本与 latest.json 校验清单
+      - name: Update macOS ARM64 platform manifest immediately
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           TAG_NAME=${GITHUB_REF#refs/tags/}
           node scripts/update-platform-manifest.js "$TAG_NAME" \
-            "darwin-x64:dist/jeikcode-${TAG_NAME}-darwin-x64" \
             "darwin-arm64:dist/jeikcode-${TAG_NAME}-darwin-arm64"
 
   # --- Linux distro-pm 包管理工具兼容性测试门禁 ---
