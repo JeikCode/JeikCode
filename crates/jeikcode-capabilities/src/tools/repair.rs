@@ -1006,20 +1006,19 @@ fn extract_outermost_json(s: &str) -> Option<String> {
     None
 }
 
-/// 替换中文双引号与单引号为标准 ASCII 引号
-fn normalize_chinese_quotes(s: &str) -> String {
-    s.replace(['\u{201C}', '\u{201D}'], "\"")
-        .replace(['\u{2018}', '\u{2019}'], "'")
-}
-
-/// 替换结构外部的全角标点符号（中文冒号、逗号、顿号、分号、全角大括号与方括号）
-fn normalize_fullwidth_structural_punctuation(s: &str) -> String {
+/// 替换仅位于 JSON 结构外部的全角标点与中文引号
+/// 关键安全保障：通过 structural_mask 判定，严格仅在普通字符串外部生效。
+/// 任何位于双引号字符串内部的中文冒号（：）、逗号（，）、顿号（、）、中文双引号（“”）
+/// 均属于合法正文内容（如 Markdown、文件正文、代码），绝对保持原汁原味，不作任何替换！
+fn normalize_structural_punctuation(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mask = structural_mask(&chars);
     let mut out = String::with_capacity(s.len());
     for (i, &c) in chars.iter().enumerate() {
         if mask[i] {
             match c {
+                '\u{201C}' | '\u{201D}' => out.push('"'), // 中文双引号 “ ” (仅在结构层生效)
+                '\u{2018}' | '\u{2019}' => out.push('\''), // 中文单引号 ‘ ’ (仅在结构层生效)
                 '\u{FF1A}' => out.push(':'),              // 全角冒号 ：
                 '\u{FF0C}' | '\u{3001}' => out.push(','), // 全角逗号 ，与顿号 、
                 '\u{FF1B}' => out.push(','),              // 全角分号 ；
@@ -1030,6 +1029,7 @@ fn normalize_fullwidth_structural_punctuation(s: &str) -> String {
                 _ => out.push(c),
             }
         } else {
+            // 字符串内容内部：绝对不可变！保留所有中文标点与符号
             out.push(c);
         }
     }
@@ -1112,16 +1112,13 @@ pub fn repair_json(s: &str) -> String {
         result = extracted;
     }
 
-    // 1. 中文双引号 “ ” 与单引号 ‘ ’ 规范化
-    result = normalize_chinese_quotes(&result);
-
-    // 2. 过滤结构外部的 JS 注释 (// 与 /* */)
+    // 1. 过滤结构外部的 JS 注释 (// 与 /* */)
     result = strip_json_comments(&result);
 
-    // 3. 结构外部全角标点规范化 (全角冒号：、逗号，、顿号、分号、大括号与方括号)
-    result = normalize_fullwidth_structural_punctuation(&result);
+    // 2. 结构外部全角标点与结构中文引号规范化 (严格仅在普通字符串外部生效，绝不污染正文)
+    result = normalize_structural_punctuation(&result);
 
-    // 4. 规范化 Python/JS 裸字面量 (True -> true, False -> false, None -> null)
+    // 3. 规范化 Python/JS 裸字面量 (True -> true, False -> false, None -> null)
     result = normalize_bare_literals(&result);
 
     // Fix invalid JSON backslash escapes: \. \( \) \| \w \d \s \+ \* etc.
@@ -2600,6 +2597,17 @@ mod tests {
         let val: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(val["command"], "git status");
         assert_eq!(val["shell"], "default");
+    }
+
+    #[test]
+    fn repair_json_preserves_chinese_punctuation_and_quotes_inside_string_values() {
+        let input = r#"{"file_path": "docs/notice.md", "content": "注意：欢迎来到“开源社区”，这里有：大会、共创、中奖！",}"#;
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            val["content"], "注意：欢迎来到“开源社区”，这里有：大会、共创、中奖！",
+            "正文内部的中文引号、冒号、逗号、顿号绝对不能被误伤或篡改！"
+        );
     }
 
     #[test]
