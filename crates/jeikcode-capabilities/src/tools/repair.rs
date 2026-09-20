@@ -191,8 +191,13 @@ fn repair_stringified_structured_fields(args: &str, schema: &serde_json::Value) 
 /// PowerShell cmdlet/pipe variable was emitted while `shell` was omitted (or
 /// left at its schema default), which would otherwise let Git Bash expand `$_`
 /// before PowerShell ever sees it.
-fn route_native_windows_shell(tool_name: &str, args: &str) -> String {
-    if !cfg!(target_os = "windows") || !super::is_shell_tool_name(tool_name) {
+/// Protocol- and platform-independent shell argument repair and routing.
+/// 1. Self-heals missing `command` when the model passes `cmd` or embeds the command in `description`.
+/// 2. Self-heals trailing unclosed quotes in inline scripts (e.g. `python -c "..."` missing closing quote)
+///    to eliminate Bash "unexpected EOF while looking for matching" errors.
+/// 3. On Windows, normalizes shell aliases and routes unmistakable PowerShell/cmd commands.
+fn repair_and_route_shell_args(tool_name: &str, args: &str) -> String {
+    if !super::is_shell_tool_name(tool_name) {
         return args.to_string();
     }
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(args) else {
@@ -202,63 +207,270 @@ fn route_native_windows_shell(tool_name: &str, args: &str) -> String {
         return args.to_string();
     };
     let mut changed = false;
-    // Absorb two common schema-shape mistakes without touching command bytes.
+
+    // 1. 协议无关/跨平台的命令字段自愈 (兼容 cmd 别名或从 description 中提取命令)
     if !object.contains_key("command") {
-        if let Some(command) = object.get("cmd").and_then(serde_json::Value::as_str) {
-            let command = command.to_string();
+        if let Some(cmd) = object.get("cmd").and_then(serde_json::Value::as_str) {
+            let cmd = cmd.to_string();
             object.remove("cmd");
-            object.insert("command".into(), serde_json::Value::String(command));
+            object.insert("command".into(), serde_json::Value::String(cmd));
+            changed = true;
+        } else if let Some(desc) = object
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+        {
+            let candidate = strip_action_prefixes(desc);
+            if is_likely_shell_command(&candidate) {
+                object.insert("command".into(), serde_json::Value::String(candidate));
+                changed = true;
+            }
+        }
+    }
+
+    // 2. 引号平衡自愈：自动修复如 python -c "... 尾部缺失闭合引号，阻断 Bash unexpected EOF
+    if let Some(command) = object.get("command").and_then(serde_json::Value::as_str) {
+        if let Some(healed_cmd) = heal_unclosed_quotes(command) {
+            object.insert("command".into(), serde_json::Value::String(healed_cmd));
             changed = true;
         }
     }
-    if let Some(shell) = object
-        .get("shell")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_ascii_lowercase)
+
+    // 3. Windows 平台特有的原生 Shell 别名归一化与自动路由
+    #[cfg(target_os = "windows")]
     {
-        let canonical = match shell.as_str() {
-            "powershell.exe" | "pwsh" | "pwsh.exe" | "ps" => Some("powershell"),
-            "cmd.exe" | "command_prompt" => Some("cmd"),
-            _ => None,
-        };
-        if let Some(canonical) = canonical {
-            object.insert(
-                "shell".into(),
-                serde_json::Value::String(canonical.to_string()),
-            );
-            changed = true;
+        if let Some(shell) = object
+            .get("shell")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_ascii_lowercase)
+        {
+            let canonical = match shell.as_str() {
+                "powershell.exe" | "pwsh" | "pwsh.exe" | "ps" => Some("powershell"),
+                "cmd.exe" | "command_prompt" => Some("cmd"),
+                _ => None,
+            };
+            if let Some(canonical) = canonical {
+                object.insert(
+                    "shell".into(),
+                    serde_json::Value::String(canonical.to_string()),
+                );
+                changed = true;
+            }
+        }
+        let shell_is_default = object
+            .get("shell")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|shell| shell.eq_ignore_ascii_case("default"));
+
+        if shell_is_default {
+            if let Some(command) = object.get("command").and_then(serde_json::Value::as_str) {
+                let inferred = if looks_unmistakably_powershell(command) {
+                    Some("powershell")
+                } else if looks_unmistakably_cmd(command) {
+                    Some("cmd")
+                } else {
+                    None
+                };
+                if let Some(inf) = inferred {
+                    object.insert(
+                        "shell".to_string(),
+                        serde_json::Value::String(inf.to_string()),
+                    );
+                    changed = true;
+                }
+            }
         }
     }
-    if object
-        .get("shell")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|shell| !shell.eq_ignore_ascii_case("default"))
-    {
-        return if changed {
-            serde_json::to_string(&value).unwrap_or_else(|_| args.to_string())
-        } else {
-            args.to_string()
-        };
-    }
-    let Some(command) = object.get("command").and_then(serde_json::Value::as_str) else {
-        return args.to_string();
-    };
-    let inferred = if looks_unmistakably_powershell(command) {
-        "powershell"
-    } else if looks_unmistakably_cmd(command) {
-        "cmd"
+
+    if changed {
+        serde_json::to_string(&value).unwrap_or_else(|_| args.to_string())
     } else {
-        return if changed {
-            serde_json::to_string(&value).unwrap_or_else(|_| args.to_string())
-        } else {
-            args.to_string()
-        };
-    };
-    object.insert(
-        "shell".to_string(),
-        serde_json::Value::String(inferred.to_string()),
-    );
-    serde_json::to_string(&value).unwrap_or_else(|_| args.to_string())
+        args.to_string()
+    }
+}
+
+/// 剥离命令前缀标签（支持 Markdown 代码块及多种中英文执行前缀）
+fn strip_action_prefixes(desc: &str) -> String {
+    let mut s = desc.trim();
+    if s.starts_with("```") {
+        if let Some(end) = s.rfind("```") {
+            if end > 3 {
+                let inner = &s[3..end];
+                if let Some(nl) = inner.find('\n') {
+                    s = inner[nl + 1..].trim();
+                } else {
+                    s = inner.trim();
+                }
+            }
+        }
+    }
+    if s.starts_with('`') && s.ends_with('`') && s.len() >= 2 {
+        s = s[1..s.len() - 1].trim();
+    }
+    let prefixes = [
+        "run: ",
+        "run ",
+        "execute: ",
+        "execute ",
+        "check: ",
+        "check ",
+        "command: ",
+        "command ",
+        "cmd: ",
+        "cmd ",
+        "执行: ",
+        "执行：",
+        "执行 ",
+        "运行: ",
+        "运行：",
+        "运行 ",
+        "powershell: ",
+        "pwsh: ",
+        "bash: ",
+        "sh: ",
+        "$ ",
+        "# ",
+        "> ",
+    ];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for pfx in &prefixes {
+            let matches = if pfx.is_ascii() {
+                s.to_ascii_lowercase().starts_with(pfx)
+            } else {
+                s.starts_with(pfx)
+            };
+            if matches {
+                s = s[pfx.len()..].trim();
+                changed = true;
+            }
+        }
+    }
+    s.to_string()
+}
+
+/// 判定字符串是否符合可执行命令特征
+fn is_likely_shell_command(candidate: &str) -> bool {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains(" | ")
+        || trimmed.contains(" && ")
+        || trimmed.contains(" || ")
+        || trimmed.contains(';')
+    {
+        return true;
+    }
+    if trimmed.starts_with("./") || trimmed.starts_with(".\\") || trimmed.starts_with('/') {
+        return true;
+    }
+    if trimmed.len() >= 3
+        && trimmed.as_bytes()[1] == b':'
+        && (trimmed.as_bytes()[2] == b'\\' || trimmed.as_bytes()[2] == b'/')
+    {
+        return true;
+    }
+    let first_token = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    const KNOWN_CLI: &[&str] = &[
+        "git",
+        "cargo",
+        "npm",
+        "npx",
+        "pnpm",
+        "yarn",
+        "bun",
+        "node",
+        "python",
+        "python3",
+        "py",
+        "pip",
+        "pip3",
+        "go",
+        "rustc",
+        "docker",
+        "kubectl",
+        "ls",
+        "dir",
+        "cd",
+        "cat",
+        "grep",
+        "find",
+        "curl",
+        "wget",
+        "echo",
+        "where",
+        "which",
+        "powershell",
+        "pwsh",
+        "cmd",
+        "bash",
+        "sh",
+        "ssh",
+        "scp",
+        "mkdir",
+        "rm",
+        "cp",
+        "mv",
+        "touch",
+        "pytest",
+        "ruff",
+        "black",
+    ];
+    if KNOWN_CLI.contains(&first_token.as_str()) {
+        return true;
+    }
+    if first_token.ends_with(".exe")
+        || first_token.ends_with(".sh")
+        || first_token.ends_with(".py")
+        || first_token.ends_with(".bat")
+    {
+        return true;
+    }
+    false
+}
+
+/// 检测并自动补齐末尾未闭合的单双引号（专为截断的内联脚本如 python -c / node -e 自愈）
+fn heal_unclosed_quotes(cmd: &str) -> Option<String> {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for ch in trimmed.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && !in_single {
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+        } else if ch == '"' && !in_single {
+            in_double = !in_double;
+        }
+    }
+
+    if in_double || in_single {
+        let mut fixed = trimmed.to_string();
+        if in_single {
+            fixed.push('\'');
+        }
+        if in_double {
+            fixed.push('"');
+        }
+        return Some(fixed);
+    }
+    None
 }
 
 fn looks_unmistakably_powershell(command: &str) -> bool {
@@ -2137,7 +2349,7 @@ mod tests {
     #[cfg(windows)]
     fn bash_repair_routes_unmistakable_powershell_without_outer_shell() {
         let input = r#"{"command":"Get-Process | Where-Object { $_.Name -eq 'node.exe' }"}"#;
-        let out = route_native_windows_shell("bash", input);
+        let out = repair_and_route_shell_args("bash", input);
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["shell"], "powershell");
         assert_eq!(
@@ -2150,24 +2362,24 @@ mod tests {
     #[cfg(windows)]
     fn bash_repair_does_not_reinterpret_generic_or_explicit_nested_shells() {
         let generic = r#"{"command":"printf '%s\\n' \"$HOME\""}"#;
-        assert_eq!(route_native_windows_shell("bash", generic), generic);
+        assert_eq!(repair_and_route_shell_args("bash", generic), generic);
         let nested =
             r#"{"command":"powershell -Command \"Get-Process | Where-Object { $_.Name }\""}"#;
-        assert_eq!(route_native_windows_shell("bash", nested), nested);
+        assert_eq!(repair_and_route_shell_args("bash", nested), nested);
     }
 
     #[test]
     #[cfg(windows)]
     fn bash_repair_normalizes_known_shell_aliases_and_cmd_field_only() {
         let input = r#"{"cmd":"Get-CimInstance Win32_Process","shell":"pwsh"}"#;
-        let out = route_native_windows_shell("bash", input);
+        let out = repair_and_route_shell_args("bash", input);
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["command"], "Get-CimInstance Win32_Process");
         assert_eq!(value["shell"], "powershell");
         assert!(value.get("cmd").is_none());
 
         let cmd = r#"{"command":"for /f %i in ('where node') do @echo %i"}"#;
-        let out = route_native_windows_shell("bash", cmd);
+        let out = repair_and_route_shell_args("bash", cmd);
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["shell"], "cmd");
     }
@@ -2176,7 +2388,41 @@ mod tests {
     #[cfg(windows)]
     fn bash_repair_preserves_unknown_explicit_shell_and_script_bytes() {
         let input = r#"{"command":"Invoke-StrangeThing --raw '$x'","shell":"custom-shell"}"#;
-        assert_eq!(route_native_windows_shell("bash", input), input);
+        assert_eq!(repair_and_route_shell_args("bash", input), input);
+    }
+
+    #[test]
+    fn shell_repair_extracts_command_from_description_when_missing() {
+        let input = r#"{"description":"Run: git status -s"}"#;
+        let out = repair_and_route_shell_args("run_command", input);
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["command"], "git status -s");
+        assert_eq!(value["description"], "Run: git status -s");
+
+        let fenced = "{\"description\":\"```bash\\npython -c \\\"print(1)\\\"\\n```\"}";
+        let out_fenced = repair_and_route_shell_args("run_command", fenced);
+        let val_fenced: serde_json::Value = serde_json::from_str(&out_fenced).unwrap();
+        assert_eq!(val_fenced["command"], "python -c \"print(1)\"");
+    }
+
+    #[test]
+    fn shell_repair_heals_unclosed_quotes_preventing_unexpected_eof() {
+        let broken =
+            r#"{"command":"python -c \"import sqlite3; conn = sqlite3.connect('test.db')"}"#;
+        let out = repair_and_route_shell_args("run_command", broken);
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            value["command"],
+            "python -c \"import sqlite3; conn = sqlite3.connect('test.db')\""
+        );
+
+        let single_broken = r#"{"command":"python -c 'import json; print(\"ok\")"}"#;
+        let out_single = repair_and_route_shell_args("run_command", single_broken);
+        let val_single: serde_json::Value = serde_json::from_str(&out_single).unwrap();
+        assert_eq!(
+            val_single["command"],
+            "python -c 'import json; print(\"ok\")'"
+        );
     }
 
     #[test]
@@ -2364,7 +2610,7 @@ impl RepairToolArgsMiddleware {
     ) {
         call.arguments = repair_tool_args(tool_name, &call.arguments);
         call.arguments = repair_stringified_structured_fields(&call.arguments, parameters_schema);
-        call.arguments = route_native_windows_shell(tool_name, &call.arguments);
+        call.arguments = repair_and_route_shell_args(tool_name, &call.arguments);
         if tool_name.eq_ignore_ascii_case("edit_file") {
             call.arguments = normalize_edit_file_args(&call.arguments);
         }
