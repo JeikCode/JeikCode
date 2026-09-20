@@ -19,8 +19,8 @@ use super::bash_runtime::{
 };
 use super::{err, ok};
 use async_trait::async_trait;
-use jeikcode_kernel::tool::{ProgressSink, RiskLevel, Tool, ToolContext, ToolResult};
 use base64::Engine;
+use jeikcode_kernel::tool::{ProgressSink, RiskLevel, Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::borrow::Cow;
@@ -1180,7 +1180,8 @@ fn detect_unix_shell() -> &'static str {
         if std::path::Path::new("/bin/bash").exists()
             || std::path::Path::new("/usr/bin/bash").exists()
             || std::env::var_os("PATH").is_some_and(|p| {
-                std::env::split_paths(&p).any(|dir| dir.join("bash").is_file() || dir.join("bash.exe").is_file())
+                std::env::split_paths(&p)
+                    .any(|dir| dir.join("bash").is_file() || dir.join("bash.exe").is_file())
             })
         {
             "bash"
@@ -1947,6 +1948,9 @@ fn format_streams(
         }
         s.push_str("[stderr]\n");
         s.push_str(&stderr);
+        if stderr.contains("unexpected EOF while looking for matching") {
+            s.push_str("\n[Self-Healing Guidance: Shell command failed with an unmatched quote or quote escaping conflict. For complex inline Python/Node scripts on Windows, consider: 1. Pass `shell: \"powershell\"`; 2. Write the code to a file via `write_file` and execute it; 3. Ensure balanced quotes.]\n");
+        }
     }
     match exit {
         None => s,

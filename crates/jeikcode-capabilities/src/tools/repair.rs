@@ -191,8 +191,13 @@ fn repair_stringified_structured_fields(args: &str, schema: &serde_json::Value) 
 /// PowerShell cmdlet/pipe variable was emitted while `shell` was omitted (or
 /// left at its schema default), which would otherwise let Git Bash expand `$_`
 /// before PowerShell ever sees it.
-fn route_native_windows_shell(tool_name: &str, args: &str) -> String {
-    if !cfg!(target_os = "windows") || !super::is_shell_tool_name(tool_name) {
+/// Protocol- and platform-independent shell argument repair and routing.
+/// 1. Self-heals missing `command` when the model passes `cmd` or embeds the command in `description`.
+/// 2. Self-heals trailing unclosed quotes in inline scripts (e.g. `python -c "..."` missing closing quote)
+///    to eliminate Bash "unexpected EOF while looking for matching" errors.
+/// 3. On Windows, normalizes shell aliases and routes unmistakable PowerShell/cmd commands.
+fn repair_and_route_shell_args(tool_name: &str, args: &str) -> String {
+    if !super::is_shell_tool_name(tool_name) {
         return args.to_string();
     }
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(args) else {
@@ -202,63 +207,270 @@ fn route_native_windows_shell(tool_name: &str, args: &str) -> String {
         return args.to_string();
     };
     let mut changed = false;
-    // Absorb two common schema-shape mistakes without touching command bytes.
+
+    // 1. 协议无关/跨平台的命令字段自愈 (兼容 cmd 别名或从 description 中提取命令)
     if !object.contains_key("command") {
-        if let Some(command) = object.get("cmd").and_then(serde_json::Value::as_str) {
-            let command = command.to_string();
+        if let Some(cmd) = object.get("cmd").and_then(serde_json::Value::as_str) {
+            let cmd = cmd.to_string();
             object.remove("cmd");
-            object.insert("command".into(), serde_json::Value::String(command));
+            object.insert("command".into(), serde_json::Value::String(cmd));
+            changed = true;
+        } else if let Some(desc) = object
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+        {
+            let candidate = strip_action_prefixes(desc);
+            if is_likely_shell_command(&candidate) {
+                object.insert("command".into(), serde_json::Value::String(candidate));
+                changed = true;
+            }
+        }
+    }
+
+    // 2. 引号平衡自愈：自动修复如 python -c "... 尾部缺失闭合引号，阻断 Bash unexpected EOF
+    if let Some(command) = object.get("command").and_then(serde_json::Value::as_str) {
+        if let Some(healed_cmd) = heal_unclosed_quotes(command) {
+            object.insert("command".into(), serde_json::Value::String(healed_cmd));
             changed = true;
         }
     }
-    if let Some(shell) = object
-        .get("shell")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_ascii_lowercase)
+
+    // 3. Windows 平台特有的原生 Shell 别名归一化与自动路由
+    #[cfg(target_os = "windows")]
     {
-        let canonical = match shell.as_str() {
-            "powershell.exe" | "pwsh" | "pwsh.exe" | "ps" => Some("powershell"),
-            "cmd.exe" | "command_prompt" => Some("cmd"),
-            _ => None,
-        };
-        if let Some(canonical) = canonical {
-            object.insert(
-                "shell".into(),
-                serde_json::Value::String(canonical.to_string()),
-            );
-            changed = true;
+        if let Some(shell) = object
+            .get("shell")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_ascii_lowercase)
+        {
+            let canonical = match shell.as_str() {
+                "powershell.exe" | "pwsh" | "pwsh.exe" | "ps" => Some("powershell"),
+                "cmd.exe" | "command_prompt" => Some("cmd"),
+                _ => None,
+            };
+            if let Some(canonical) = canonical {
+                object.insert(
+                    "shell".into(),
+                    serde_json::Value::String(canonical.to_string()),
+                );
+                changed = true;
+            }
+        }
+        let shell_is_default = object
+            .get("shell")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|shell| shell.eq_ignore_ascii_case("default"));
+
+        if shell_is_default {
+            if let Some(command) = object.get("command").and_then(serde_json::Value::as_str) {
+                let inferred = if looks_unmistakably_powershell(command) {
+                    Some("powershell")
+                } else if looks_unmistakably_cmd(command) {
+                    Some("cmd")
+                } else {
+                    None
+                };
+                if let Some(inf) = inferred {
+                    object.insert(
+                        "shell".to_string(),
+                        serde_json::Value::String(inf.to_string()),
+                    );
+                    changed = true;
+                }
+            }
         }
     }
-    if object
-        .get("shell")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|shell| !shell.eq_ignore_ascii_case("default"))
-    {
-        return if changed {
-            serde_json::to_string(&value).unwrap_or_else(|_| args.to_string())
-        } else {
-            args.to_string()
-        };
-    }
-    let Some(command) = object.get("command").and_then(serde_json::Value::as_str) else {
-        return args.to_string();
-    };
-    let inferred = if looks_unmistakably_powershell(command) {
-        "powershell"
-    } else if looks_unmistakably_cmd(command) {
-        "cmd"
+
+    if changed {
+        serde_json::to_string(&value).unwrap_or_else(|_| args.to_string())
     } else {
-        return if changed {
-            serde_json::to_string(&value).unwrap_or_else(|_| args.to_string())
-        } else {
-            args.to_string()
-        };
-    };
-    object.insert(
-        "shell".to_string(),
-        serde_json::Value::String(inferred.to_string()),
-    );
-    serde_json::to_string(&value).unwrap_or_else(|_| args.to_string())
+        args.to_string()
+    }
+}
+
+/// 剥离命令前缀标签（支持 Markdown 代码块及多种中英文执行前缀）
+fn strip_action_prefixes(desc: &str) -> String {
+    let mut s = desc.trim();
+    if s.starts_with("```") {
+        if let Some(end) = s.rfind("```") {
+            if end > 3 {
+                let inner = &s[3..end];
+                if let Some(nl) = inner.find('\n') {
+                    s = inner[nl + 1..].trim();
+                } else {
+                    s = inner.trim();
+                }
+            }
+        }
+    }
+    if s.starts_with('`') && s.ends_with('`') && s.len() >= 2 {
+        s = s[1..s.len() - 1].trim();
+    }
+    let prefixes = [
+        "run: ",
+        "run ",
+        "execute: ",
+        "execute ",
+        "check: ",
+        "check ",
+        "command: ",
+        "command ",
+        "cmd: ",
+        "cmd ",
+        "执行: ",
+        "执行：",
+        "执行 ",
+        "运行: ",
+        "运行：",
+        "运行 ",
+        "powershell: ",
+        "pwsh: ",
+        "bash: ",
+        "sh: ",
+        "$ ",
+        "# ",
+        "> ",
+    ];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for pfx in &prefixes {
+            let matches = if pfx.is_ascii() {
+                s.to_ascii_lowercase().starts_with(pfx)
+            } else {
+                s.starts_with(pfx)
+            };
+            if matches {
+                s = s[pfx.len()..].trim();
+                changed = true;
+            }
+        }
+    }
+    s.to_string()
+}
+
+/// 判定字符串是否符合可执行命令特征
+fn is_likely_shell_command(candidate: &str) -> bool {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains(" | ")
+        || trimmed.contains(" && ")
+        || trimmed.contains(" || ")
+        || trimmed.contains(';')
+    {
+        return true;
+    }
+    if trimmed.starts_with("./") || trimmed.starts_with(".\\") || trimmed.starts_with('/') {
+        return true;
+    }
+    if trimmed.len() >= 3
+        && trimmed.as_bytes()[1] == b':'
+        && (trimmed.as_bytes()[2] == b'\\' || trimmed.as_bytes()[2] == b'/')
+    {
+        return true;
+    }
+    let first_token = trimmed
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    const KNOWN_CLI: &[&str] = &[
+        "git",
+        "cargo",
+        "npm",
+        "npx",
+        "pnpm",
+        "yarn",
+        "bun",
+        "node",
+        "python",
+        "python3",
+        "py",
+        "pip",
+        "pip3",
+        "go",
+        "rustc",
+        "docker",
+        "kubectl",
+        "ls",
+        "dir",
+        "cd",
+        "cat",
+        "grep",
+        "find",
+        "curl",
+        "wget",
+        "echo",
+        "where",
+        "which",
+        "powershell",
+        "pwsh",
+        "cmd",
+        "bash",
+        "sh",
+        "ssh",
+        "scp",
+        "mkdir",
+        "rm",
+        "cp",
+        "mv",
+        "touch",
+        "pytest",
+        "ruff",
+        "black",
+    ];
+    if KNOWN_CLI.contains(&first_token.as_str()) {
+        return true;
+    }
+    if first_token.ends_with(".exe")
+        || first_token.ends_with(".sh")
+        || first_token.ends_with(".py")
+        || first_token.ends_with(".bat")
+    {
+        return true;
+    }
+    false
+}
+
+/// 检测并自动补齐末尾未闭合的单双引号（专为截断的内联脚本如 python -c / node -e 自愈）
+fn heal_unclosed_quotes(cmd: &str) -> Option<String> {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for ch in trimmed.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && !in_single {
+            escaped = true;
+            continue;
+        }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+        } else if ch == '"' && !in_single {
+            in_double = !in_double;
+        }
+    }
+
+    if in_double || in_single {
+        let mut fixed = trimmed.to_string();
+        if in_single {
+            fixed.push('\'');
+        }
+        if in_double {
+            fixed.push('"');
+        }
+        return Some(fixed);
+    }
+    None
 }
 
 fn looks_unmistakably_powershell(command: &str) -> bool {
@@ -753,6 +965,133 @@ fn escape_unescaped_control_chars_in_strings(s: &str) -> String {
     escaped
 }
 
+/// 剥离最外层的 Markdown 代码块、XML 标签或前置后置闲聊文本，提取纯净 JSON
+fn extract_outermost_json(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return None;
+    }
+    // 检测 Markdown 代码块 ```json ... ``` 或 ``` ... ```
+    if let Some(start) = trimmed.find("```") {
+        let after_fence = &trimmed[start + 3..];
+        let content_start = if let Some(nl) = after_fence.find('\n') {
+            start + 3 + nl + 1
+        } else {
+            start + 3
+        };
+        if let Some(end) = trimmed[content_start..].rfind("```") {
+            let inner = trimmed[content_start..content_start + end].trim();
+            if (inner.starts_with('{') && inner.ends_with('}'))
+                || (inner.starts_with('[') && inner.ends_with(']'))
+            {
+                return Some(inner.to_string());
+            }
+        }
+    }
+    // 检测 XML 标签包裹或自然语言闲聊包裹，如 <arguments>{...}</arguments> 或 Here is the JSON: {...}
+    if let Some(first_brace) = trimmed.find('{') {
+        if let Some(last_brace) = trimmed.rfind('}') {
+            if last_brace > first_brace {
+                return Some(trimmed[first_brace..=last_brace].to_string());
+            }
+        }
+    }
+    if let Some(first_bracket) = trimmed.find('[') {
+        if let Some(last_bracket) = trimmed.rfind(']') {
+            if last_bracket > first_bracket {
+                return Some(trimmed[first_bracket..=last_bracket].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 替换仅位于 JSON 结构外部的全角标点与中文引号
+/// 关键安全保障：通过 structural_mask 判定，严格仅在普通字符串外部生效。
+/// 任何位于双引号字符串内部的中文冒号（：）、逗号（，）、顿号（、）、中文双引号（“”）
+/// 均属于合法正文内容（如 Markdown、文件正文、代码），绝对保持原汁原味，不作任何替换！
+fn normalize_structural_punctuation(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mask = structural_mask(&chars);
+    let mut out = String::with_capacity(s.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if mask[i] {
+            match c {
+                '\u{201C}' | '\u{201D}' => out.push('"'), // 中文双引号 “ ” (仅在结构层生效)
+                '\u{2018}' | '\u{2019}' => out.push('\''), // 中文单引号 ‘ ’ (仅在结构层生效)
+                '\u{FF1A}' => out.push(':'),              // 全角冒号 ：
+                '\u{FF0C}' | '\u{3001}' => out.push(','), // 全角逗号 ，与顿号 、
+                '\u{FF1B}' => out.push(','),              // 全角分号 ；
+                '\u{FF5B}' => out.push('{'),              // 全角大括号 ｛
+                '\u{FF5D}' => out.push('}'),              // 全角大括号 ｝
+                '\u{FF3B}' => out.push('['),              // 全角方括号 ［
+                '\u{FF3D}' => out.push(']'),              // 全角方括号 ］
+                _ => out.push(c),
+            }
+        } else {
+            // 字符串内容内部：绝对不可变！保留所有中文标点与符号
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// 过滤 JSON 结构外部的 JavaScript 注释（单行 // 与多行 /* ... */）
+fn strip_json_comments(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mask = structural_mask(&chars);
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if mask[i] && chars[i] == '/' && i + 1 < chars.len() {
+            if chars[i + 1] == '/' {
+                i += 2;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            } else if chars[i + 1] == '*' {
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i += 2;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// 规范化结构外部的 Python / JS 裸字面量（True / False / None / undefined / NaN）
+fn normalize_bare_literals(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mask = structural_mask(&chars);
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if mask[i] && chars[i].is_alphabetic() {
+            let start = i;
+            while i < chars.len() && chars[i].is_alphanumeric() {
+                i += 1;
+            }
+            let token: String = chars[start..i].iter().collect();
+            match token.as_str() {
+                "True" => out.push_str("true"),
+                "False" => out.push_str("false"),
+                "None" | "undefined" | "NaN" => out.push_str("null"),
+                _ => out.push_str(&token),
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Attempt to repair common JSON issues from LLM output:
 /// - Trailing commas before } or ]
 /// - Single quotes instead of double quotes (outside of string values)
@@ -762,8 +1101,25 @@ fn escape_unescaped_control_chars_in_strings(s: &str) -> String {
 /// - Unquoted keys
 /// - Missing commas between key-value pairs
 /// - Markdown code fences
+/// - Chinese fullwidth punctuation & Chinese quotes
+/// - Python/JS bare literals (True/False/None)
+/// - Stripping explanatory wrappers and JS comments
 pub fn repair_json(s: &str) -> String {
     let mut result = s.to_string();
+
+    // 0. 剥离外层解释性文本、XML 标签包裹与 Markdown 代码块
+    if let Some(extracted) = extract_outermost_json(&result) {
+        result = extracted;
+    }
+
+    // 1. 过滤结构外部的 JS 注释 (// 与 /* */)
+    result = strip_json_comments(&result);
+
+    // 2. 结构外部全角标点与结构中文引号规范化 (严格仅在普通字符串外部生效，绝不污染正文)
+    result = normalize_structural_punctuation(&result);
+
+    // 3. 规范化 Python/JS 裸字面量 (True -> true, False -> false, None -> null)
+    result = normalize_bare_literals(&result);
 
     // Fix invalid JSON backslash escapes: \. \( \) \| \w \d \s \+ \* etc.
     // JSON only allows: \\ \" \/ \n \r \t \b \f \uXXXX
@@ -973,6 +1329,28 @@ pub fn repair_json(s: &str) -> String {
             .enumerate()
             .filter_map(|(i, c)| if keep[i] { Some(c) } else { None })
             .collect();
+    }
+
+    // 自动闭合末尾因模型流式截断而未闭合的字符串
+    {
+        let mut in_string = false;
+        let mut escaped = false;
+        for c in result.chars() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if c == '\\' && in_string {
+                escaped = true;
+                continue;
+            }
+            if c == '"' {
+                in_string = !in_string;
+            }
+        }
+        if in_string {
+            result.push('"');
+        }
     }
 
     // If it doesn't start with { or [, wrap it
@@ -1459,8 +1837,7 @@ fn coerce_edit_hunk(v: &serde_json::Value) -> Option<serde_json::Value> {
         .or_else(|| obj.get("new_str"))
         .or_else(|| obj.get("newText"))
         .or_else(|| obj.get("replace"))
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
+        .and_then(|x| x.as_str())?;
     if old.is_empty() && new.is_empty() {
         return None;
     }
@@ -2137,7 +2514,7 @@ mod tests {
     #[cfg(windows)]
     fn bash_repair_routes_unmistakable_powershell_without_outer_shell() {
         let input = r#"{"command":"Get-Process | Where-Object { $_.Name -eq 'node.exe' }"}"#;
-        let out = route_native_windows_shell("bash", input);
+        let out = repair_and_route_shell_args("bash", input);
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["shell"], "powershell");
         assert_eq!(
@@ -2150,24 +2527,24 @@ mod tests {
     #[cfg(windows)]
     fn bash_repair_does_not_reinterpret_generic_or_explicit_nested_shells() {
         let generic = r#"{"command":"printf '%s\\n' \"$HOME\""}"#;
-        assert_eq!(route_native_windows_shell("bash", generic), generic);
+        assert_eq!(repair_and_route_shell_args("bash", generic), generic);
         let nested =
             r#"{"command":"powershell -Command \"Get-Process | Where-Object { $_.Name }\""}"#;
-        assert_eq!(route_native_windows_shell("bash", nested), nested);
+        assert_eq!(repair_and_route_shell_args("bash", nested), nested);
     }
 
     #[test]
     #[cfg(windows)]
     fn bash_repair_normalizes_known_shell_aliases_and_cmd_field_only() {
         let input = r#"{"cmd":"Get-CimInstance Win32_Process","shell":"pwsh"}"#;
-        let out = route_native_windows_shell("bash", input);
+        let out = repair_and_route_shell_args("bash", input);
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["command"], "Get-CimInstance Win32_Process");
         assert_eq!(value["shell"], "powershell");
         assert!(value.get("cmd").is_none());
 
         let cmd = r#"{"command":"for /f %i in ('where node') do @echo %i"}"#;
-        let out = route_native_windows_shell("bash", cmd);
+        let out = repair_and_route_shell_args("bash", cmd);
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["shell"], "cmd");
     }
@@ -2176,7 +2553,101 @@ mod tests {
     #[cfg(windows)]
     fn bash_repair_preserves_unknown_explicit_shell_and_script_bytes() {
         let input = r#"{"command":"Invoke-StrangeThing --raw '$x'","shell":"custom-shell"}"#;
-        assert_eq!(route_native_windows_shell("bash", input), input);
+        assert_eq!(repair_and_route_shell_args("bash", input), input);
+    }
+
+    #[test]
+    fn shell_repair_extracts_command_from_description_when_missing() {
+        let input = r#"{"description":"Run: git status -s"}"#;
+        let out = repair_and_route_shell_args("run_command", input);
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["command"], "git status -s");
+        assert_eq!(value["description"], "Run: git status -s");
+
+        let fenced = "{\"description\":\"```bash\\npython -c \\\"print(1)\\\"\\n```\"}";
+        let out_fenced = repair_and_route_shell_args("run_command", fenced);
+        let val_fenced: serde_json::Value = serde_json::from_str(&out_fenced).unwrap();
+        assert_eq!(val_fenced["command"], "python -c \"print(1)\"");
+    }
+
+    #[test]
+    fn shell_repair_heals_unclosed_quotes_preventing_unexpected_eof() {
+        let broken =
+            r#"{"command":"python -c \"import sqlite3; conn = sqlite3.connect('test.db')"}"#;
+        let out = repair_and_route_shell_args("run_command", broken);
+        let value: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            value["command"],
+            "python -c \"import sqlite3; conn = sqlite3.connect('test.db')\""
+        );
+
+        let single_broken = r#"{"command":"python -c 'import json; print(\"ok\")"}"#;
+        let out_single = repair_and_route_shell_args("run_command", single_broken);
+        let val_single: serde_json::Value = serde_json::from_str(&out_single).unwrap();
+        assert_eq!(
+            val_single["command"],
+            "python -c 'import json; print(\"ok\")'"
+        );
+    }
+
+    #[test]
+    fn repair_json_heals_chinese_quotes_and_fullwidth_punctuation() {
+        let input = "{\u{201C}command\u{201D}\u{FF1A} \u{201C}git status\u{201D}\u{FF0C} \u{201C}shell\u{201D}\u{FF1A} \u{201C}default\u{201D}}";
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["command"], "git status");
+        assert_eq!(val["shell"], "default");
+    }
+
+    #[test]
+    fn repair_json_preserves_chinese_punctuation_and_quotes_inside_string_values() {
+        let input = r#"{"file_path": "docs/notice.md", "content": "注意：欢迎来到“开源社区”，这里有：大会、共创、中奖！",}"#;
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            val["content"], "注意：欢迎来到“开源社区”，这里有：大会、共创、中奖！",
+            "正文内部的中文引号、冒号、逗号、顿号绝对不能被误伤或篡改！"
+        );
+    }
+
+    #[test]
+    fn repair_json_heals_bare_python_and_js_literals() {
+        let input = r#"{"flag": True, "count": False, "data": None, "extra": undefined}"#;
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["flag"], true);
+        assert_eq!(val["count"], false);
+        assert_eq!(val["data"], serde_json::Value::Null);
+        assert_eq!(val["extra"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn repair_json_strips_js_comments() {
+        let input = r#"{
+            // line comment
+            "command": "git status", /* inline block comment */
+            "shell": "default" // trailing comment
+        }"#;
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["command"], "git status");
+        assert_eq!(val["shell"], "default");
+    }
+
+    #[test]
+    fn repair_json_extracts_outermost_json_from_chit_chat() {
+        let input = "Here is the tool call you requested:\n<arguments>\n{\"command\": \"git diff\"}\n</arguments>\nHope this helps!";
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["command"], "git diff");
+    }
+
+    #[test]
+    fn repair_json_heals_unclosed_trailing_string_and_braces() {
+        let truncated = r#"{"command": "git checkout -b feature/test"#;
+        let out = repair_json(truncated);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["command"], "git checkout -b feature/test");
     }
 
     #[test]
@@ -2364,7 +2835,7 @@ impl RepairToolArgsMiddleware {
     ) {
         call.arguments = repair_tool_args(tool_name, &call.arguments);
         call.arguments = repair_stringified_structured_fields(&call.arguments, parameters_schema);
-        call.arguments = route_native_windows_shell(tool_name, &call.arguments);
+        call.arguments = repair_and_route_shell_args(tool_name, &call.arguments);
         if tool_name.eq_ignore_ascii_case("edit_file") {
             call.arguments = normalize_edit_file_args(&call.arguments);
         }
