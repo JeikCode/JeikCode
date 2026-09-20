@@ -965,6 +965,133 @@ fn escape_unescaped_control_chars_in_strings(s: &str) -> String {
     escaped
 }
 
+/// 剥离最外层的 Markdown 代码块、XML 标签或前置后置闲聊文本，提取纯净 JSON
+fn extract_outermost_json(s: &str) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return None;
+    }
+    // 检测 Markdown 代码块 ```json ... ``` 或 ``` ... ```
+    if let Some(start) = trimmed.find("```") {
+        let after_fence = &trimmed[start + 3..];
+        let content_start = if let Some(nl) = after_fence.find('\n') {
+            start + 3 + nl + 1
+        } else {
+            start + 3
+        };
+        if let Some(end) = trimmed[content_start..].rfind("```") {
+            let inner = trimmed[content_start..content_start + end].trim();
+            if (inner.starts_with('{') && inner.ends_with('}'))
+                || (inner.starts_with('[') && inner.ends_with(']'))
+            {
+                return Some(inner.to_string());
+            }
+        }
+    }
+    // 检测 XML 标签包裹或自然语言闲聊包裹，如 <arguments>{...}</arguments> 或 Here is the JSON: {...}
+    if let Some(first_brace) = trimmed.find('{') {
+        if let Some(last_brace) = trimmed.rfind('}') {
+            if last_brace > first_brace {
+                return Some(trimmed[first_brace..=last_brace].to_string());
+            }
+        }
+    }
+    if let Some(first_bracket) = trimmed.find('[') {
+        if let Some(last_bracket) = trimmed.rfind(']') {
+            if last_bracket > first_bracket {
+                return Some(trimmed[first_bracket..=last_bracket].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 替换中文双引号与单引号为标准 ASCII 引号
+fn normalize_chinese_quotes(s: &str) -> String {
+    s.replace(['\u{201C}', '\u{201D}'], "\"")
+        .replace(['\u{2018}', '\u{2019}'], "'")
+}
+
+/// 替换结构外部的全角标点符号（中文冒号、逗号、顿号、分号、全角大括号与方括号）
+fn normalize_fullwidth_structural_punctuation(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mask = structural_mask(&chars);
+    let mut out = String::with_capacity(s.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if mask[i] {
+            match c {
+                '\u{FF1A}' => out.push(':'),              // 全角冒号 ：
+                '\u{FF0C}' | '\u{3001}' => out.push(','), // 全角逗号 ，与顿号 、
+                '\u{FF1B}' => out.push(','),              // 全角分号 ；
+                '\u{FF5B}' => out.push('{'),              // 全角大括号 ｛
+                '\u{FF5D}' => out.push('}'),              // 全角大括号 ｝
+                '\u{FF3B}' => out.push('['),              // 全角方括号 ［
+                '\u{FF3D}' => out.push(']'),              // 全角方括号 ］
+                _ => out.push(c),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// 过滤 JSON 结构外部的 JavaScript 注释（单行 // 与多行 /* ... */）
+fn strip_json_comments(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mask = structural_mask(&chars);
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if mask[i] && chars[i] == '/' && i + 1 < chars.len() {
+            if chars[i + 1] == '/' {
+                i += 2;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            } else if chars[i + 1] == '*' {
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    i += 1;
+                }
+                i += 2;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// 规范化结构外部的 Python / JS 裸字面量（True / False / None / undefined / NaN）
+fn normalize_bare_literals(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mask = structural_mask(&chars);
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if mask[i] && chars[i].is_alphabetic() {
+            let start = i;
+            while i < chars.len() && chars[i].is_alphanumeric() {
+                i += 1;
+            }
+            let token: String = chars[start..i].iter().collect();
+            match token.as_str() {
+                "True" => out.push_str("true"),
+                "False" => out.push_str("false"),
+                "None" | "undefined" | "NaN" => out.push_str("null"),
+                _ => out.push_str(&token),
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Attempt to repair common JSON issues from LLM output:
 /// - Trailing commas before } or ]
 /// - Single quotes instead of double quotes (outside of string values)
@@ -974,8 +1101,28 @@ fn escape_unescaped_control_chars_in_strings(s: &str) -> String {
 /// - Unquoted keys
 /// - Missing commas between key-value pairs
 /// - Markdown code fences
+/// - Chinese fullwidth punctuation & Chinese quotes
+/// - Python/JS bare literals (True/False/None)
+/// - Stripping explanatory wrappers and JS comments
 pub fn repair_json(s: &str) -> String {
     let mut result = s.to_string();
+
+    // 0. 剥离外层解释性文本、XML 标签包裹与 Markdown 代码块
+    if let Some(extracted) = extract_outermost_json(&result) {
+        result = extracted;
+    }
+
+    // 1. 中文双引号 “ ” 与单引号 ‘ ’ 规范化
+    result = normalize_chinese_quotes(&result);
+
+    // 2. 过滤结构外部的 JS 注释 (// 与 /* */)
+    result = strip_json_comments(&result);
+
+    // 3. 结构外部全角标点规范化 (全角冒号：、逗号，、顿号、分号、大括号与方括号)
+    result = normalize_fullwidth_structural_punctuation(&result);
+
+    // 4. 规范化 Python/JS 裸字面量 (True -> true, False -> false, None -> null)
+    result = normalize_bare_literals(&result);
 
     // Fix invalid JSON backslash escapes: \. \( \) \| \w \d \s \+ \* etc.
     // JSON only allows: \\ \" \/ \n \r \t \b \f \uXXXX
@@ -1185,6 +1332,28 @@ pub fn repair_json(s: &str) -> String {
             .enumerate()
             .filter_map(|(i, c)| if keep[i] { Some(c) } else { None })
             .collect();
+    }
+
+    // 自动闭合末尾因模型流式截断而未闭合的字符串
+    {
+        let mut in_string = false;
+        let mut escaped = false;
+        for c in result.chars() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if c == '\\' && in_string {
+                escaped = true;
+                continue;
+            }
+            if c == '"' {
+                in_string = !in_string;
+            }
+        }
+        if in_string {
+            result.push('"');
+        }
     }
 
     // If it doesn't start with { or [, wrap it
@@ -1671,8 +1840,7 @@ fn coerce_edit_hunk(v: &serde_json::Value) -> Option<serde_json::Value> {
         .or_else(|| obj.get("new_str"))
         .or_else(|| obj.get("newText"))
         .or_else(|| obj.get("replace"))
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
+        .and_then(|x| x.as_str())?;
     if old.is_empty() && new.is_empty() {
         return None;
     }
@@ -2423,6 +2591,55 @@ mod tests {
             val_single["command"],
             "python -c 'import json; print(\"ok\")'"
         );
+    }
+
+    #[test]
+    fn repair_json_heals_chinese_quotes_and_fullwidth_punctuation() {
+        let input = "{\u{201C}command\u{201D}\u{FF1A} \u{201C}git status\u{201D}\u{FF0C} \u{201C}shell\u{201D}\u{FF1A} \u{201C}default\u{201D}}";
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["command"], "git status");
+        assert_eq!(val["shell"], "default");
+    }
+
+    #[test]
+    fn repair_json_heals_bare_python_and_js_literals() {
+        let input = r#"{"flag": True, "count": False, "data": None, "extra": undefined}"#;
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["flag"], true);
+        assert_eq!(val["count"], false);
+        assert_eq!(val["data"], serde_json::Value::Null);
+        assert_eq!(val["extra"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn repair_json_strips_js_comments() {
+        let input = r#"{
+            // line comment
+            "command": "git status", /* inline block comment */
+            "shell": "default" // trailing comment
+        }"#;
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["command"], "git status");
+        assert_eq!(val["shell"], "default");
+    }
+
+    #[test]
+    fn repair_json_extracts_outermost_json_from_chit_chat() {
+        let input = "Here is the tool call you requested:\n<arguments>\n{\"command\": \"git diff\"}\n</arguments>\nHope this helps!";
+        let out = repair_json(input);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["command"], "git diff");
+    }
+
+    #[test]
+    fn repair_json_heals_unclosed_trailing_string_and_braces() {
+        let truncated = r#"{"command": "git checkout -b feature/test"#;
+        let out = repair_json(truncated);
+        let val: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(val["command"], "git checkout -b feature/test");
     }
 
     #[test]
