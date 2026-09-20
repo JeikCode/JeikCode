@@ -377,6 +377,21 @@ test('second identical ```text fence is a new code block, not a live replay', ()
   );
 });
 
+test('repeated headings and templates in prose are not swallowed by replay dedup', () => {
+  const existing =
+    '### 1. 错误\n* **输入命令**：\n```bash\ncmd 1\n```\n* **报错输出**：\n```text\nerr 1\n```\n* **原因分析**：\nreason 1\n\n' +
+    '### 2. 错误\n* **输入命令**：\n```bash\ncmd 2\n```\n';
+  // A repeated template item in section 2 must not be dropped just because it appeared in section 1
+  assert.equal(assistantDeltaAlreadyPainted(existing, '* **报错输出**：\n'), false);
+  assert.equal(
+    liveContentDeltaAlreadyOnParts([{ kind: 'text', text: existing }], {
+      type: 'text',
+      content: '* **报错输出**：\n',
+    }),
+    false,
+  );
+});
+
 test('idle watch does not activate on leftover user or runtime_info events', () => {
   assert.equal(isWatchTurnActivationEvent('text'), true);
   assert.equal(isWatchTurnActivationEvent('tool_start'), true);

@@ -368,20 +368,20 @@ export function isMarkdownFenceDelta(incoming: string): boolean {
  * Short streaming tokens (1–4 chars) are not treated as duplicates just
  * because the character appeared earlier in the turn.
  *
- * Fence lines are excluded from `includes()` matching: two ```` ```text ````
- * blocks in one reply share the same opening delta, but the second is a new
- * fence, not a journal replay.
+ * CRITICAL: Only match at the head (startsWith) or tail (endsWith). Never use
+ * includes() in the middle of existing text: a reply can legitimately repeat
+ * section templates, headings, code snippets, or list prefixes (e.g. `* **报错输出**：`),
+ * and middle includes() swallowed those tokens, corrupting markdown fences and layout.
  */
 export function assistantDeltaAlreadyPainted(existing: string, incoming: string): boolean {
   if (!incoming) return true;
   if (!existing) return false;
-  if (existing.endsWith(incoming)) return true;
+  if (existing.endsWith(incoming) || existing.startsWith(incoming)) return true;
   if (isMarkdownFenceDelta(incoming)) return false;
   if (incoming.length < SUBSTANTIAL_REPLAY_DELTA) return false;
-  if (existing.includes(incoming) || existing.startsWith(incoming)) return true;
   const painted = collapseWs(existing);
   const chunk = collapseWs(incoming);
-  return chunk.length >= SUBSTANTIAL_REPLAY_DELTA && painted.includes(chunk);
+  return chunk.length >= SUBSTANTIAL_REPLAY_DELTA && (painted.startsWith(chunk) || painted.endsWith(chunk));
 }
 
 type ReplayPart = {

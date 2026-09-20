@@ -5799,7 +5799,7 @@ function AssistantMessageView({
   const trimmed = text.trim();
   const isError =
     !messageHasTools(msg) &&
-    !msg.parts.some((p) => p.type === 'thought') &&
+    !msg.parts.some((p) => p.kind === 'reasoning') &&
     (trimmed.startsWith('[错误:') ||
       trimmed.startsWith('[连接错误:') ||
       trimmed.startsWith('[Error:') ||
