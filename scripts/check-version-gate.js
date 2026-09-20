@@ -38,9 +38,9 @@ function compareSemVer(v1, v2) {
   return 0;
 }
 
-async function fetchLatestGitHubRelease() {
+async function fetchPreviousGitHubRelease(currentTag) {
   if (!token) return null;
-  const url = `https://api.github.com/repos/${repo}/releases/latest`;
+  const url = `https://api.github.com/repos/${repo}/releases?per_page=15`;
   const options = {
     headers: {
       'User-Agent': 'JeikCode-Release-Gate',
@@ -54,12 +54,15 @@ async function fetchLatestGitHubRelease() {
       res.on('data', d => body += d);
       res.on('end', () => {
         try {
-          const json = JSON.parse(body);
-          if (json.tag_name) {
-            resolve(json.tag_name);
-          } else {
-            resolve(null);
+          const list = JSON.parse(body);
+          if (Array.isArray(list)) {
+            for (const r of list) {
+              if (r.tag_name && compareSemVer(r.tag_name, currentTag) !== 0) {
+                return resolve(r.tag_name);
+              }
+            }
           }
+          resolve(null);
         } catch {
           resolve(null);
         }
@@ -68,23 +71,27 @@ async function fetchLatestGitHubRelease() {
   });
 }
 
-function getLocalBaselineVersions() {
+function getLocalBaselineVersions(currentTag) {
   const baselines = [];
 
-  // 1. Check latest.json
+  // 1. Check latest.json (exclude current tag itself)
   if (fs.existsSync('latest.json')) {
     try {
       const manifest = JSON.parse(fs.readFileSync('latest.json', 'utf8'));
-      if (manifest.version) baselines.push(manifest.version);
+      if (manifest.version && compareSemVer(manifest.version, currentTag) !== 0) {
+        baselines.push(manifest.version);
+      }
     } catch {}
   }
 
-  // 2. Check Cargo.toml
+  // 2. Check Cargo.toml (exclude current tag itself)
   if (fs.existsSync('Cargo.toml')) {
     try {
       const content = fs.readFileSync('Cargo.toml', 'utf8');
       const match = content.match(/^version = "(.*?)"/m);
-      if (match && match[1]) baselines.push(match[1]);
+      if (match && match[1] && compareSemVer(match[1], currentTag) !== 0) {
+        baselines.push(match[1]);
+      }
     } catch {}
   }
 
@@ -94,12 +101,12 @@ function getLocalBaselineVersions() {
 async function run() {
   console.log(`🔍 Checking release version gate for target tag: ${tag}...`);
 
-  const baselines = getLocalBaselineVersions();
+  const baselines = getLocalBaselineVersions(tag);
 
-  const remoteLatest = await fetchLatestGitHubRelease();
-  if (remoteLatest) {
-    console.log(`   Fetched latest GitHub release: ${remoteLatest}`);
-    baselines.push(remoteLatest);
+  const previousRelease = await fetchPreviousGitHubRelease(tag);
+  if (previousRelease) {
+    console.log(`   Fetched previous GitHub release: ${previousRelease}`);
+    baselines.push(previousRelease);
   }
 
   if (baselines.length === 0) {
