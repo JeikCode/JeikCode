@@ -2020,15 +2020,23 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
               localReattach: ownsTurn,
             });
           } else if (!active) {
-            // Sidebar switch used a stale local/background running flag. The
-            // daemon is idle — drop the stop square so the composer can send.
-            localTurnSessionsRef.current.delete(loadId);
-            backgroundRunningSessionsRef.current.delete(loadId);
-            if (!abortRef.current) {
-              liveLifecycleRef.current = createLiveLifecycleState();
-              setBusyAndClock(false);
+            // Sidebar switch used a stale local/background running flag. But if the
+            // session is an active liveSession and local state still has it running,
+            // or the cached transcript still has an in-flight assistant, do NOT immediately
+            // drop busy — wait for an authoritative terminal or live state event.
+            const hasLocalRunning =
+              localTurnSessionsRef.current.has(loadId) ||
+              backgroundRunningSessionsRef.current.has(loadId);
+            const inFlightCached = transcriptHasInFlightAssistant(currentCached ?? []);
+            if (!isLiveSession || (!hasLocalRunning && !inFlightCached)) {
+              localTurnSessionsRef.current.delete(loadId);
+              backgroundRunningSessionsRef.current.delete(loadId);
+              if (!abortRef.current) {
+                liveLifecycleRef.current = createLiveLifecycleState();
+                setBusyAndClock(false);
+              }
+              if (requestIdRef.current === loadId) requestIdRef.current = null;
             }
-            if (requestIdRef.current === loadId) requestIdRef.current = null;
           } else if (requestIdRef.current === loadId) {
             requestIdRef.current = null;
           }
@@ -2565,8 +2573,17 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
       const loaded = sessionMessagesToDisplay(e.messages);
       atBottomRef.current = true;
       const canvasInFlight = transcriptHasInFlightAssistant(messagesRef.current);
+      const targetSid = e.session_id || null;
+      const sessionIsRunning = !!(
+        targetSid &&
+        (backgroundRunningSessionsRef.current.has(targetSid) ||
+          localTurnSessionsRef.current.has(targetSid))
+      );
+      const snapshotInFlight = transcriptHasInFlightAssistant(loaded);
       const turnLive =
-        liveLifecycleRef.current.running
+        sessionIsRunning
+        || snapshotInFlight
+        || liveLifecycleRef.current.running
         || busyRef.current
         || pendingSelfEchoRef.current.length > 0
         || canvasInFlight;
@@ -2575,7 +2592,9 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
         queuedRef.current.length,
       );
       const lifecycle = reduceLiveLifecycle(liveLifecycleRef.current, { type: 'snapshot' });
-      liveLifecycleRef.current = lifecycle.state;
+      liveLifecycleRef.current = (sessionIsRunning || snapshotInFlight)
+        ? { running: true, terminalConsumed: false }
+        : lifecycle.state;
       const restored = restoreLiveSnapshot(loaded);
       const viewingOther =
         !!activeIdRef.current && !!e.session_id && activeIdRef.current !== e.session_id;
@@ -2585,12 +2604,13 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
         !viewingOther,
       );
       liveIdleSnapshotRef.current = idleFlagAfterLiveSnapshot({
-        snapshotHasInFlight: transcriptHasInFlightAssistant(loaded),
+        snapshotHasInFlight: snapshotInFlight,
         keepCanvas,
         canvasHasInFlight: canvasInFlight,
         turnLive,
       });
-      onLiveRunningChange?.(e.session_id || null, restored.running);
+      const effectiveRunning = (sessionIsRunning || snapshotInFlight) ? true : restored.running;
+      onLiveRunningChange?.(e.session_id || null, effectiveRunning);
       if (e.session_id && restored.messages.length > 0) {
         messageCacheRef.current.set(e.session_id, restored.messages);
       }
@@ -2610,7 +2630,9 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
           canvasInFlight,
           turnLive,
         })) {
-          setBusyAndClock(restored.running);
+          setBusyAndClock(effectiveRunning);
+        } else if (effectiveRunning) {
+          setBusyAndClock(true);
         }
         if (queueDisposition.discardQueued) {
           setQueued([]);

@@ -28,7 +28,7 @@ pub struct UninstallManifest {
 
 pub fn uninstall_manifest() -> UninstallManifest {
     UninstallManifest {
-        credential_files: &["auth.toml", "mcp.json", "config.toml", "JEIKCODE.md", "JEIKCODE.md"],
+        credential_files: &["auth.toml", "mcp.json", "config.toml", "JEIKCODE.md", "ATOMCODE.md"],
         state_files: &[
             "history",
             "input_history.txt",
@@ -90,12 +90,12 @@ pub fn windows_install_dir_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(p) = std::env::var_os("JEIKCODE_PREFIX") {
         out.push(PathBuf::from(p));
-    } else if let Some(p) = std::env::var_os("JEIKCODE_PREFIX") {
+    } else if let Some(p) = std::env::var_os("ATOMCODE_PREFIX") {
         out.push(PathBuf::from(p));
     }
     if let Some(p) = std::env::var_os("LOCALAPPDATA") {
         out.push(PathBuf::from(p.clone()).join("JeikCode"));
-        out.push(PathBuf::from(p).join("JeikCode"));
+        out.push(PathBuf::from(p).join("AtomCode"));
     }
     out
 }

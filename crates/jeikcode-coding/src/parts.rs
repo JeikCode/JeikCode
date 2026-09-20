@@ -1734,7 +1734,7 @@ fn is_persona_block_1(message: &Message) -> bool {
     message.text.starts_with("<environment>")
         || message.text.starts_with(JEIKCODE_PERSONA_PREFIX)
         || message.text.starts_with("You are JeikCode")
-        || message.text.starts_with("You are JeikCode")
+        || message.text.starts_with("You are AtomCode")
         || (message.text.contains(" running the ")
             && message.text.contains(" model.")
             && (message.text.contains("## PRECEDENCE:") || message.text.contains("## WORKFLOW:")))

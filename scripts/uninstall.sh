@@ -15,7 +15,7 @@
 set -eu
 
 # ---- manifest (must mirror crates/jeikcode-cli/src/uninstall/paths.rs) ----
-JEIKCODE_GROUP2_FILES="auth.toml mcp.json config.toml JEIKCODE.md JEIKCODE.md"
+JEIKCODE_GROUP2_FILES="auth.toml mcp.json config.toml JEIKCODE.md ATOMCODE.md"
 JEIKCODE_GROUP3_FILES="history input_history.txt recent_dirs.txt codingplan_sync.json device_id config_teachs.md"
 JEIKCODE_GROUP3_DIRS="staged telemetry plugins commands skills prompts thesaurus"
 JEIKCODE_GROUP3_PREFIXES="notice."
@@ -70,7 +70,7 @@ DATA="${JEIKCODE_HOME:-$HOME/.jeikcode}"
 echo "Will remove (Group 1):"
 [ -n "$BIN" ] && echo "  $BIN"
 if [ -n "$BIN_DIR" ]; then
-    for f in jeikcode.bak .jeikcode.rolling .jeikcode.download .jeikcode.writable-probe; do
+    for f in jeikcode.bak atomcode.bak .jeikcode.rolling .jeikcode.download .jeikcode.writable-probe; do
         [ -e "$BIN_DIR/$f" ] && echo "  $BIN_DIR/$f"
     done
 fi

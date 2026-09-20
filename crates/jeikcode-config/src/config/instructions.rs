@@ -50,23 +50,24 @@ pub struct LayeredInstructions {
 impl LayeredInstructions {
     /// Load all three instruction tiers from disk.
     ///
-    /// - Global:  `~/.jeikcode/JEIKCODE.md` (or legacy `~/.jeikcode/JEIKCODE.md`)
+    /// - Global:  `~/.jeikcode/JEIKCODE.md` (or legacy `~/.atomcode/ATOMCODE.md`)
     /// - Project: `<project_root>/.jeikcode.md`, `JEIKCODE.md`, `AGENTS.md`,
-    ///   `.jeikcode.md`, `JEIKCODE.md`, `CLAUDE.md`, or `claude.md` (first match wins)
-    /// - User:    `<project_root>/.jeikcode.user.md` (or legacy `.jeikcode.user.md`)
+    ///   `.atomcode.md`, `ATOMCODE.md`, `CLAUDE.md`, or `claude.md` (first match wins)
+    /// - User:    `<project_root>/.jeikcode.user.md` (or legacy `.atomcode.user.md`)
     pub fn load(project_root: &Path) -> Self {
         let config_dir = crate::config::Config::config_dir();
         let global = Self::try_load(&config_dir.join("AGENTS.md"), InstructionLevel::Global)
-            .or_else(|| Self::try_load(&config_dir.join("JEIKCODE.md"), InstructionLevel::Global));
+            .or_else(|| Self::try_load(&config_dir.join("JEIKCODE.md"), InstructionLevel::Global))
+            .or_else(|| Self::try_load(&config_dir.join("ATOMCODE.md"), InstructionLevel::Global));
 
         // Lookup order: native JeikCode names first, then AGENTS.md (open standard),
-        // then legacy JeikCode and Claude Code names for compatibility.
+        // then legacy AtomCode and Claude Code names for compatibility.
         let project = [
             ".jeikcode.md",
             "JEIKCODE.md",
             "AGENTS.md",
-            ".jeikcode.md",
-            "JEIKCODE.md",
+            ".atomcode.md",
+            "ATOMCODE.md",
             "CLAUDE.md",
             "claude.md",
         ]
@@ -79,7 +80,7 @@ impl LayeredInstructions {
         )
         .or_else(|| {
             Self::try_load(
-                &project_root.join(".jeikcode.user.md"),
+                &project_root.join(".atomcode.user.md"),
                 InstructionLevel::User,
             )
         });

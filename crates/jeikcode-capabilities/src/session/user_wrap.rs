@@ -46,7 +46,7 @@ impl UserWrapHook {
 
     /// Resolve the active `user-wrap.md` path for a given working directory.
     pub fn resolve_wrap_file_for(working_dir: &Path) -> Option<PathBuf> {
-        // 1. Project-level: <working_dir>/.jeikcode/user-wrap.md (or legacy .jeikcode)
+        // 1. Project-level: <working_dir>/.jeikcode/user-wrap.md (or legacy .atomcode)
         let p1_jeik = working_dir.join(".jeikcode").join("user-wrap.md");
         if p1_jeik.is_file() {
             return Some(p1_jeik);
@@ -62,7 +62,7 @@ impl UserWrapHook {
             return Some(p2);
         }
 
-        // 3. Global-level: ~/.jeikcode/user-wrap.md or ~/.jeikcode/user-wrap.md
+        // 3. Global-level: ~/.jeikcode/user-wrap.md (or legacy ~/.atomcode/user-wrap.md)
         let global = crate::session::config_dir().join("user-wrap.md");
         if global.is_file() {
             return Some(global);

@@ -18,7 +18,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Group2Files = @("auth.toml","mcp.json","config.toml","JEIKCODE.md","JEIKCODE.md")
+$Group2Files = @("auth.toml","mcp.json","config.toml","JEIKCODE.md","ATOMCODE.md")
 $Group3Files = @("history","input_history.txt","recent_dirs.txt","codingplan_sync.json","device_id","config_teachs.md")
 $Group3Dirs  = @("staged","telemetry","plugins","commands","skills","prompts","thesaurus")
 $Group3Prefixes = @("notice.")
@@ -34,17 +34,17 @@ if ($PrintManifest) {
 if ($Purge -and $KeepData) { Write-Error "-Purge conflicts with -KeepData"; exit 2 }
 
 # locate install dir
-$InstallDir = if ($env:JEIKCODE_PREFIX) { $env:JEIKCODE_PREFIX } elseif ($env:JEIKCODE_PREFIX) { $env:JEIKCODE_PREFIX } elseif (Test-Path (Join-Path $env:LOCALAPPDATA "JeikCode")) { Join-Path $env:LOCALAPPDATA "JeikCode" } else { Join-Path $env:LOCALAPPDATA "JeikCode" }
+$InstallDir = if ($env:JEIKCODE_PREFIX) { $env:JEIKCODE_PREFIX } elseif ($env:ATOMCODE_PREFIX) { $env:ATOMCODE_PREFIX } elseif (Test-Path (Join-Path $env:LOCALAPPDATA "JeikCode")) { Join-Path $env:LOCALAPPDATA "JeikCode" } else { Join-Path $env:LOCALAPPDATA "AtomCode" }
 $Binary = Join-Path $InstallDir "jeikcode.exe"
-$AliasBinary = Join-Path $InstallDir "jeikcode.exe"
+$AliasBinary = Join-Path $InstallDir "atomcode.exe"
 
-$DataDir = if ($env:JEIKCODE_HOME) { $env:JEIKCODE_HOME } elseif ($env:JEIKCODE_HOME) { $env:JEIKCODE_HOME } elseif (Test-Path (Join-Path $env:USERPROFILE ".jeikcode")) { Join-Path $env:USERPROFILE ".jeikcode" } else { Join-Path $env:USERPROFILE ".jeikcode" }
+$DataDir = if ($env:JEIKCODE_HOME) { $env:JEIKCODE_HOME } elseif ($env:ATOMCODE_HOME) { $env:ATOMCODE_HOME } elseif (Test-Path (Join-Path $env:USERPROFILE ".jeikcode")) { Join-Path $env:USERPROFILE ".jeikcode" } else { Join-Path $env:USERPROFILE ".atomcode" }
 
 # plan
 Write-Host "Will remove (Group 1):"
 if (Test-Path $Binary) { Write-Host "  $Binary" }
 if (Test-Path $AliasBinary) { Write-Host "  $AliasBinary" }
-foreach ($f in @("jeikcode.exe.bak","jeikcode.exe.bak",".jeikcode.rolling",".jeikcode.download",".jeikcode.writable-probe")) {
+foreach ($f in @("jeikcode.exe.bak","atomcode.exe.bak",".jeikcode.rolling",".jeikcode.download",".jeikcode.writable-probe")) {
     $p = Join-Path $InstallDir $f
     if (Test-Path $p) { Write-Host "  $p" }
 }

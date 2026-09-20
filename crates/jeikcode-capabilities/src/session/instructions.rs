@@ -26,8 +26,8 @@ const PROJECT_NAMES: [&str; 7] = [
     ".jeikcode.md",
     "JEIKCODE.md",
     "CLAUDE.md",
-    ".jeikcode.md",
-    "JEIKCODE.md",
+    ".atomcode.md",
+    "ATOMCODE.md",
     "claude.md",
 ];
 
@@ -55,8 +55,8 @@ Prefer code_explore once you have an exact type/method name from the glossary.",
         candidates: &[
             ".jeikcode/glossary.md",
             ".jeikcode/domain-glossary.md",
-            ".jeikcode/glossary.md",
-            ".jeikcode/domain-glossary.md",
+            ".atomcode/glossary.md",
+            ".atomcode/domain-glossary.md",
             "docs/domain-glossary.md",
             "docs/glossary.md",
             "domain-glossary.md",
@@ -72,8 +72,8 @@ explaining features. Prefer these over guessing product policy.",
         candidates: &[
             ".jeikcode/rules.md",
             ".jeikcode/business-rules.md",
-            ".jeikcode/rules.md",
-            ".jeikcode/business-rules.md",
+            ".atomcode/rules.md",
+            ".atomcode/business-rules.md",
             "docs/rules.md",
             "docs/business-rules.md",
             "rules.md",
@@ -89,9 +89,9 @@ before searching code or inventing schema.",
             ".jeikcode/dbwords.md",
             ".jeikcode/db-words.md",
             ".jeikcode/schema.md",
-            ".jeikcode/dbwords.md",
-            ".jeikcode/db-words.md",
-            ".jeikcode/schema.md",
+            ".atomcode/dbwords.md",
+            ".atomcode/db-words.md",
+            ".atomcode/schema.md",
             "docs/dbwords.md",
             "docs/db-words.md",
             "dbwords.md",
@@ -102,13 +102,15 @@ before searching code or inventing schema.",
 /// Render the global / project / user instruction tiers plus additive knowledge packs.
 /// Empty string when nothing exists (the caller then omits the section).
 ///
-/// `home` = config root (`~/.jeikcode` or `~/.jeikcode`); `project` = workspace root.
+/// `home` = config root (`~/.jeikcode` or `~/.atomcode`); `project` = workspace root.
 pub fn render_instructions(home: &Path, project: &Path) -> String {
     let mut out: Vec<String> = Vec::new();
     let global = if home.join("AGENTS.md").exists() {
         home.join("AGENTS.md")
     } else if home.join("JEIKCODE.md").exists() {
         home.join("JEIKCODE.md")
+    } else if home.join("ATOMCODE.md").exists() {
+        home.join("ATOMCODE.md")
     } else {
         home.join("JEIKCODE.md")
     };
@@ -130,6 +132,8 @@ pub fn render_instructions(home: &Path, project: &Path) -> String {
     }
     let user = if project.join(".jeikcode.user.md").exists() {
         project.join(".jeikcode.user.md")
+    } else if project.join(".atomcode.user.md").exists() {
+        project.join(".atomcode.user.md")
     } else {
         project.join(".jeikcode.user.md")
     };

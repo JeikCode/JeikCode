@@ -319,7 +319,7 @@ impl CodingPersonaHook {
             .find(|(_, m)| {
                 m.text.starts_with("<environment>")
                     || m.text.starts_with("You are JeikCode")
-                    || m.text.starts_with("You are JeikCode")
+                    || m.text.starts_with("You are AtomCode")
             })
             .map(|(i, _)| i);
 

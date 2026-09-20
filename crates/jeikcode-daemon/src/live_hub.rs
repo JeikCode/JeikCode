@@ -277,7 +277,10 @@ fn correlate_web_steers_locked(
 fn runtime_phase_is_busy(phase: RuntimePhase) -> bool {
     matches!(
         phase,
-        RuntimePhase::InTurn | RuntimePhase::WaitingApproval | RuntimePhase::Reconfiguring
+        RuntimePhase::InTurn
+            | RuntimePhase::WaitingApproval
+            | RuntimePhase::Reconfiguring
+            | RuntimePhase::AwaitingProvider
     )
 }
 

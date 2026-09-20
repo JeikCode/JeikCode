@@ -13,7 +13,7 @@ use super::graph::CodeGraph;
 use super::index::FileUnit;
 
 pub const DISK_CACHE_REL_DB: &str = ".jeikcode/codegraph/index.v1.db";
-pub const LEGACY_DISK_CACHE_REL_DB: &str = ".jeikcode/codegraph/index.v1.db";
+pub const LEGACY_DISK_CACHE_REL_DB: &str = ".atomcode/codegraph/index.v1.db";
 
 pub fn disk_cache_path_db(root: &Path) -> PathBuf {
     let canonical_root = super::canonical(root);
