@@ -38,12 +38,12 @@ impl MemoryStore {
         Self::new(dir.join("memory.md"))
     }
 
-    /// Project-scope store. Honors `JEIKCODE_PROJECT_MEMORY_DIR` / `JEIKCODE_PROJECT_MEMORY_DIR`;
-    /// defaults to `.jeikcode` with `.jeikcode` fallback.
+    /// Project-scope store. Honors `JEIKCODE_PROJECT_MEMORY_DIR` / `ATOMCODE_PROJECT_MEMORY_DIR`;
+    /// defaults to `.jeikcode` with `.atomcode` fallback.
     pub fn project(project_root: &Path) -> Self {
         let override_dir = std::env::var("JEIKCODE_PROJECT_MEMORY_DIR")
             .ok()
-            .or_else(|| std::env::var("JEIKCODE_PROJECT_MEMORY_DIR").ok());
+            .or_else(|| std::env::var("ATOMCODE_PROJECT_MEMORY_DIR").ok());
         Self::new(project_memory_path(project_root, override_dir.as_deref()))
     }
 

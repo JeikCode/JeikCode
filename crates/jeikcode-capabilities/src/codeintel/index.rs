@@ -1141,7 +1141,7 @@ fn load_codegraph_ignore(root: &Path) -> ignore::gitignore::Gitignore {
         root.join(".codegraphignore"),
         root.join(".codegraignore"),
         root.join(".jeikcode").join(".codegraphignore"),
-        root.join(".jeikcode").join(".codegraphignore"),
+        root.join(".atomcode").join(".codegraphignore"),
         cfg.join(".codegraphignore"),
         cfg.join(".codegraignore"),
     ] {
@@ -1233,22 +1233,94 @@ struct Walked {
     len: u64,
 }
 
+/// Discover all git repository roots within `workspace`:
+/// 1. The workspace root itself (if it has `.git`);
+/// 2. Any subdirectories (monorepo packages / submodules / sibling git clones) containing `.git`.
+fn discover_all_git_roots(workspace: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let norm_ws = normalize_index_path(workspace);
+    if workspace.join(".git").exists() {
+        roots.push(norm_ws.clone());
+    }
+
+    // Traverse directory tree up to depth 3 to find nested git repositories
+    let mut stack = vec![(workspace.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth >= 3 {
+            continue;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') || should_skip_dir(e.file_name().as_os_str()) {
+                continue;
+            }
+            let norm_p = normalize_index_path(&p);
+            if p.join(".git").exists() {
+                if !roots.contains(&norm_p) {
+                    roots.push(norm_p);
+                }
+                // Do not recurse deeper inside a found git root
+            } else {
+                stack.push((p, depth + 1));
+            }
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 /// Walk `root` (assumed already canonical) for indexable source files + staleness inputs.
 fn collect_files(root: &Path) -> Vec<Walked> {
-    // Fast-path: If git repository, query `git ls-files -z --cached --others --exclude-standard`.
-    // Directly reads Git binary index within ~20-30ms for tens of thousands of files.
-    if root.join(".git").exists() {
-        if let Some(git_files) = collect_files_via_git(root) {
-            if !git_files.is_empty() {
-                return git_files;
+    let git_roots = discover_all_git_roots(root);
+    if !git_roots.is_empty() {
+        use std::collections::HashSet;
+        let gi = load_codegraph_ignore(root);
+        let mut all_files = Vec::new();
+        let mut seen = HashSet::new();
+
+        for gr in &git_roots {
+            if let Some(files) = collect_files_via_git_root(root, gr, &gi) {
+                for w in files {
+                    if seen.insert(w.path.clone()) {
+                        all_files.push(w);
+                    }
+                }
             }
+        }
+
+        // If root itself has no .git, or if some subtrees are outside git roots,
+        // use fallback walk to pick up loose un-git'd files in the workspace.
+        if !root.join(".git").exists() {
+            let fallback_files = collect_files_fallback(root);
+            for w in fallback_files {
+                if seen.insert(w.path.clone()) {
+                    all_files.push(w);
+                }
+            }
+        }
+
+        if !all_files.is_empty() {
+            all_files.sort_by(|a, b| a.path.cmp(&b.path));
+            return all_files;
         }
     }
 
     collect_files_fallback(root)
 }
 
-fn collect_files_via_git(root: &Path) -> Option<Vec<Walked>> {
+fn collect_files_via_git_root(
+    workspace_root: &Path,
+    git_root: &Path,
+    gi: &ignore::gitignore::Gitignore,
+) -> Option<Vec<Walked>> {
     let mut cmd = std::process::Command::new("git");
     cmd.args(&[
         "ls-files",
@@ -1257,7 +1329,7 @@ fn collect_files_via_git(root: &Path) -> Option<Vec<Walked>> {
         "--others",
         "--exclude-standard",
     ])
-    .current_dir(root);
+    .current_dir(git_root);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1273,13 +1345,11 @@ fn collect_files_via_git(root: &Path) -> Option<Vec<Walked>> {
     let raw = output.stdout;
     let paths: Vec<&[u8]> = raw.split(|&b| b == 0).filter(|p| !p.is_empty()).collect();
 
-    let gi = load_codegraph_ignore(root);
-
     let out: Vec<Walked> = paths
         .into_par_iter()
         .filter_map(|rel_bytes| {
             let rel_str = std::str::from_utf8(rel_bytes).ok()?;
-            let full_p = root.join(rel_str);
+            let full_p = git_root.join(rel_str);
             let ext_ok = full_p
                 .extension()
                 .and_then(|e| e.to_str())
@@ -1293,7 +1363,7 @@ fn collect_files_via_git(root: &Path) -> Option<Vec<Walked>> {
                 return None;
             }
             let len = md.len();
-            if skip_index_file(root, &full_p, len, &gi) {
+            if skip_index_file(workspace_root, &full_p, len, gi) {
                 return None;
             }
             let mtime_ns = md
@@ -1336,14 +1406,14 @@ fn collect_files_fallback(root: &Path) -> Vec<Walked> {
         builder.add_ignore(global_ignore2);
     }
 
-    // Also check .jeikcode/.codegraphignore and legacy .jeikcode/.codegraphignore inside project root
+    // Also check .jeikcode/.codegraphignore and legacy .atomcode/.codegraphignore inside project root
     let project_jeikcode_ignore = root.join(".jeikcode").join(".codegraphignore");
     if project_jeikcode_ignore.is_file() {
         builder.add_ignore(project_jeikcode_ignore);
     }
-    let project_jeikcode_ignore = root.join(".jeikcode").join(".codegraphignore");
-    if project_jeikcode_ignore.is_file() {
-        builder.add_ignore(project_jeikcode_ignore);
+    let project_atomcode_ignore = root.join(".atomcode").join(".codegraphignore");
+    if project_atomcode_ignore.is_file() {
+        builder.add_ignore(project_atomcode_ignore);
     }
 
     for entry in builder
@@ -5268,5 +5338,44 @@ public class OrderController
             "tail SQL with 基本盘/BKOrderType must be kept: {joined}"
         );
         assert!(n.sql_predicates.len() <= MAX_SQL_PREDICATES_PER_SYMBOL);
+    }
+
+    #[test]
+    fn test_nested_subrepo_indexing() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+
+        // Root git repo
+        let _ = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output();
+        std::fs::write(root.join("root.py"), "def root_func(): pass\n").unwrap();
+        // Ignore sub repo in root's .gitignore (mimicking user setup)
+        std::fs::write(root.join(".gitignore"), "/sub/\n").unwrap();
+
+        // Sub git repo under root
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&sub)
+            .output();
+        std::fs::write(sub.join("sub_code.py"), "def sub_func(): pass\n").unwrap();
+
+        let files = collect_files(root);
+        let paths: Vec<String> = files
+            .iter()
+            .map(|w| w.path.to_string_lossy().replace('\\', "/"))
+            .collect();
+
+        assert!(
+            paths.iter().any(|p| p.ends_with("root.py")),
+            "root.py must be collected: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p.ends_with("sub/sub_code.py")),
+            "sub/sub_code.py must be collected even if /sub/ is gitignored in root: {paths:?}"
+        );
     }
 }

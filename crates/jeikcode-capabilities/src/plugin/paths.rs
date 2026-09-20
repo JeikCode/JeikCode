@@ -35,8 +35,8 @@ pub fn project_plugins_root(
 ) -> Option<PathBuf> {
     let base = if working_dir.join(".jeikcode").exists() {
         ".jeikcode/plugins"
-    } else if working_dir.join(".jeikcode").exists() {
-        ".jeikcode/plugins"
+    } else if working_dir.join(".atomcode").exists() {
+        ".atomcode/plugins"
     } else {
         ".jeikcode/plugins"
     };

@@ -32,8 +32,8 @@ impl InstalledTxn {
             .unwrap_or(0);
         let base_dir = if project_root.join(".jeikcode").exists() {
             project_root.join(".jeikcode")
-        } else if project_root.join(".jeikcode").exists() {
-            project_root.join(".jeikcode")
+        } else if project_root.join(".atomcode").exists() {
+            project_root.join(".atomcode")
         } else {
             project_root.join(".jeikcode")
         };
@@ -67,10 +67,10 @@ impl InstalledTxn {
                 || l == ".jeikcode/local/"
                 || l == "**/.jeikcode/local"
                 || l == "**/.jeikcode/local/"
-                || l == ".jeikcode/local"
-                || l == ".jeikcode/local/"
-                || l == "**/.jeikcode/local"
-                || l == "**/.jeikcode/local/"
+                || l == ".atomcode/local"
+                || l == ".atomcode/local/"
+                || l == "**/.atomcode/local"
+                || l == "**/.atomcode/local/"
         });
         if already {
             return Ok(());
