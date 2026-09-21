@@ -490,6 +490,486 @@ pub(crate) fn get_login_shell_env() -> Option<&'static std::collections::HashMap
         .as_ref()
 }
 
+/// Windows App Execution Alias stubs (`%LOCALAPPDATA%\Microsoft\WindowsApps\*.exe`).
+/// `python3.exe` here is a 0-byte reparse point that opens the Store (exit 49)
+/// instead of a real interpreter — same class of trap as `WindowsApps\bash.exe`.
+pub(crate) fn is_windows_apps_alias(path: &std::path::Path) -> bool {
+    let s = path
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .replace('/', "\\");
+    s.contains(r"\windowsapps\")
+}
+
+/// Locate a real CPython `python.exe` on Windows, skipping Store aliases.
+/// Cached per-process (a few `where` + `stat`s).
+#[cfg(windows)]
+pub(crate) fn detect_windows_python() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    CACHED.get_or_init(detect_windows_python_uncached).clone()
+}
+
+#[cfg(windows)]
+fn detect_windows_python_uncached() -> Option<std::path::PathBuf> {
+    use std::path::Path;
+
+    for name in ["python", "python3"] {
+        for p in where_exes(name) {
+            if p.is_file() && !is_windows_apps_alias(&p) {
+                return Some(p);
+            }
+        }
+    }
+    for p in where_exes("py") {
+        if is_windows_apps_alias(&p) {
+            continue;
+        }
+        if let Some(real) = py_launcher_executable(&p) {
+            return Some(real);
+        }
+    }
+    scan_common_python_installs()
+        .into_iter()
+        .find(|p| p.is_file() && !is_windows_apps_alias(Path::new(p)))
+}
+
+#[cfg(windows)]
+fn where_exes(name: &str) -> Vec<std::path::PathBuf> {
+    let mut cmd = std::process::Command::new("where");
+    cmd.arg(name);
+    suppress_console_window_sync(&mut cmd);
+    let Ok(out) = cmd.output() else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| std::path::PathBuf::from(l.trim()))
+        .filter(|p| !p.as_os_str().is_empty())
+        .collect()
+}
+
+#[cfg(windows)]
+fn py_launcher_executable(py_exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut cmd = std::process::Command::new(py_exe);
+    cmd.args(["-3", "-c", "import sys; print(sys.executable)"]);
+    suppress_console_window_sync(&mut cmd);
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let exe = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if exe.is_empty() {
+        return None;
+    }
+    let p = std::path::PathBuf::from(exe);
+    if p.is_file() && !is_windows_apps_alias(&p) {
+        Some(p)
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn scan_common_python_installs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut found = Vec::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(local) = dirs::data_local_dir() {
+        roots.push(local.join("Programs").join("Python"));
+    }
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        roots.push(PathBuf::from(pf).join("Python"));
+    }
+    for letter in b'C'..=b'G' {
+        let drive = format!("{}:", letter as char);
+        roots.push(PathBuf::from(format!(r"{drive}\Python")));
+        roots.push(PathBuf::from(format!(r"{drive}\Program Files\Python")));
+    }
+    for root in roots {
+        let direct = root.join("python.exe");
+        if direct.is_file() {
+            found.push(direct);
+        }
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut vers: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        vers.sort();
+        vers.reverse();
+        for v in vers {
+            let exe = v.join("python.exe");
+            if exe.is_file() {
+                found.push(exe);
+            }
+        }
+    }
+    found
+}
+
+/// CPython on Windows ships `python.exe`, not `python3.exe`. Put a `python3.exe`
+/// hardlink/copy next to a shim dir so Git Bash `python3` hits the real interpreter
+/// instead of the Store stub.
+#[cfg(windows)]
+fn python3_shim_dir(real_python: &std::path::Path) -> Option<std::path::PathBuf> {
+    let name = real_python
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if name.eq_ignore_ascii_case("python3.exe") {
+        return real_python.parent().map(|p| p.to_path_buf());
+    }
+    let dir = std::env::temp_dir().join("jeikcode-python-shim");
+    std::fs::create_dir_all(&dir).ok()?;
+    let shim = dir.join("python3.exe");
+    let real_canon = real_python
+        .canonicalize()
+        .unwrap_or_else(|_| real_python.to_path_buf());
+    let up_to_date = shim
+        .canonicalize()
+        .map(|p| p == real_canon)
+        .unwrap_or(false);
+    if !up_to_date {
+        let _ = std::fs::remove_file(&shim);
+        if std::fs::hard_link(real_python, &shim).is_err() {
+            std::fs::copy(real_python, &shim).ok()?;
+        }
+    }
+    Some(dir)
+}
+
+/// Replace command-position `python3` / `python3.exe` with the real interpreter
+/// path. Windows App Execution Aliases (`python3` → Store stub) take precedence
+/// over PATH for `CreateProcess`, so PATH-prepending alone is not enough.
+pub(crate) fn rewrite_python3_heads(command: &str, real_python: &std::path::Path) -> String {
+    let quoted = {
+        let s = real_python.to_string_lossy().replace('\\', "/");
+        if s.chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\''))
+        {
+            format!("\"{}\"", s.replace('"', "\\\""))
+        } else {
+            s
+        }
+    };
+    let mut out = String::with_capacity(command.len() + quoted.len());
+    let mut i = 0usize;
+    let n = command.len();
+    let mut cmd_start = true;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < n {
+        let c = command[i..].chars().next().unwrap();
+        let clen = c.len_utf8();
+        if in_single {
+            out.push(c);
+            if c == '\'' {
+                in_single = false;
+            }
+            i += clen;
+            continue;
+        }
+        if in_double {
+            out.push(c);
+            if c == '"' {
+                in_double = false;
+            }
+            i += clen;
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_single = true;
+                out.push(c);
+                cmd_start = false;
+            }
+            '"' => {
+                in_double = true;
+                out.push(c);
+                cmd_start = false;
+            }
+            ';' | '\n' | '(' | '{' => {
+                out.push(c);
+                cmd_start = true;
+            }
+            '|' | '&' => {
+                out.push(c);
+                cmd_start = true;
+            }
+            _ if c.is_whitespace() => out.push(c),
+            _ => {
+                if cmd_start {
+                    if let Some(consumed) = match_python3_head(&command[i..]) {
+                        out.push_str(&quoted);
+                        i += consumed;
+                        cmd_start = false;
+                        continue;
+                    }
+                }
+                out.push(c);
+                cmd_start = false;
+            }
+        }
+        i += clen;
+    }
+    out
+}
+
+#[cfg(windows)]
+pub(crate) fn rewrite_python3_for_windows_shell(command: &str) -> String {
+    match detect_windows_python() {
+        Some(py) => rewrite_python3_heads(command, &py),
+        None => command.to_string(),
+    }
+}
+
+fn match_tool_head(s: &str, names: &[&str]) -> Option<usize> {
+    let lower = s.to_ascii_lowercase();
+    for cand in names {
+        if lower.starts_with(cand) {
+            let after = &s[cand.len()..];
+            if after.is_empty()
+                || after.starts_with(|c: char| {
+                    c.is_whitespace() || matches!(c, ';' | '|' | '&' | ')' | '}' | '`')
+                })
+            {
+                return Some(cand.len());
+            }
+        }
+    }
+    None
+}
+
+fn match_python3_head(s: &str) -> Option<usize> {
+    match_tool_head(s, &["python3.exe", "python3"])
+}
+
+/// Linux models emit `rg`; Windows Git Bash ships GNU grep, not ripgrep.
+/// When `rg` is absent, rewrite command-position `rg` to `grep -E` so pipes like
+/// `git diff | rg -n pat` still work. `rg-only` flags (`--glob`) may still fail;
+/// the cwd/platform hint on error covers that residual.
+pub(crate) fn rewrite_rg_if_missing(command: &str) -> String {
+    if rg_on_path() {
+        return command.to_string();
+    }
+    rewrite_tool_heads(command, &["rg.exe", "rg"], "grep -E")
+}
+
+/// Rewrite unquoted Windows drive/UNC tokens `C:\foo` / `\\server\share` to
+/// forward slashes so Git Bash does not eat `\U`/`\t` as escapes.
+/// Quoted strings, regex `\n`, and `origin\main` are left alone.
+pub(crate) fn rewrite_unquoted_windows_paths(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut i = 0usize;
+    let n = command.len();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut token_start = true;
+    while i < n {
+        let c = command[i..].chars().next().unwrap();
+        let clen = c.len_utf8();
+        if in_single {
+            out.push(c);
+            if c == '\'' {
+                in_single = false;
+            }
+            i += clen;
+            continue;
+        }
+        if in_double {
+            out.push(c);
+            if c == '"' {
+                in_double = false;
+            }
+            i += clen;
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_single = true;
+                token_start = false;
+                out.push(c);
+                i += clen;
+            }
+            '"' => {
+                in_double = true;
+                token_start = false;
+                out.push(c);
+                i += clen;
+            }
+            _ if c.is_whitespace()
+                || matches!(
+                    c,
+                    ';' | '|' | '&' | '(' | ')' | '{' | '}' | '<' | '>' | '\n'
+                ) =>
+            {
+                out.push(c);
+                token_start = true;
+                i += clen;
+            }
+            _ if token_start => {
+                if let Some((token, consumed)) = take_windows_path_token(&command[i..]) {
+                    out.push_str(&token.replace('\\', "/"));
+                    i += consumed;
+                    token_start = false;
+                } else {
+                    out.push(c);
+                    token_start = false;
+                    i += clen;
+                }
+            }
+            _ => {
+                out.push(c);
+                token_start = false;
+                i += clen;
+            }
+        }
+    }
+    out
+}
+
+fn take_windows_path_token(s: &str) -> Option<(String, usize)> {
+    let drive = {
+        let mut ch = s.chars();
+        let letter = ch.next()?;
+        letter.is_ascii_alphabetic() && ch.next() == Some(':') && ch.next() == Some('\\')
+    };
+    let unc = {
+        let b = s.as_bytes();
+        b.len() >= 3
+            && b[0] == b'\\'
+            && b[1] == b'\\'
+            && (b[2].is_ascii_alphanumeric() || b[2] == b'.' || b[2] == b'-')
+    };
+    if !drive && !unc {
+        return None;
+    }
+    let mut end = 0usize;
+    for (idx, c) in s.char_indices() {
+        if c.is_whitespace()
+            || matches!(
+                c,
+                ';' | '|' | '&' | '(' | ')' | '{' | '}' | '<' | '>' | '\'' | '"'
+            )
+        {
+            break;
+        }
+        end = idx + c.len_utf8();
+    }
+    if end == 0 {
+        return None;
+    }
+    Some((s[..end].to_string(), end))
+}
+
+pub(crate) fn rewrite_tool_heads(command: &str, names: &[&str], replacement: &str) -> String {
+    let mut out = String::with_capacity(command.len() + replacement.len());
+    let mut i = 0usize;
+    let n = command.len();
+    let mut cmd_start = true;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < n {
+        let c = command[i..].chars().next().unwrap();
+        let clen = c.len_utf8();
+        if in_single {
+            out.push(c);
+            if c == '\'' {
+                in_single = false;
+            }
+            i += clen;
+            continue;
+        }
+        if in_double {
+            out.push(c);
+            if c == '"' {
+                in_double = false;
+            }
+            i += clen;
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_single = true;
+                out.push(c);
+                cmd_start = false;
+            }
+            '"' => {
+                in_double = true;
+                out.push(c);
+                cmd_start = false;
+            }
+            ';' | '\n' | '(' | '{' => {
+                out.push(c);
+                cmd_start = true;
+            }
+            '|' | '&' => {
+                out.push(c);
+                cmd_start = true;
+            }
+            _ if c.is_whitespace() => out.push(c),
+            _ => {
+                if cmd_start {
+                    if let Some(consumed) = match_tool_head(&command[i..], names) {
+                        out.push_str(replacement);
+                        i += consumed;
+                        cmd_start = false;
+                        continue;
+                    }
+                }
+                out.push(c);
+                cmd_start = false;
+            }
+        }
+        i += clen;
+    }
+    out
+}
+
+fn rg_on_path() -> bool {
+    #[cfg(windows)]
+    {
+        where_exes("rg")
+            .into_iter()
+            .any(|p| p.is_file() && !is_windows_apps_alias(&p))
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("sh")
+            .args(["-c", "command -v rg >/dev/null 2>&1"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(windows)]
+fn prepend_windows_python(all_paths: &mut Vec<std::path::PathBuf>) {
+    let Some(py) = detect_windows_python() else {
+        return;
+    };
+    if let Some(parent) = py.parent() {
+        let parent = parent.to_path_buf();
+        if parent.is_dir() && !all_paths.contains(&parent) {
+            all_paths.insert(0, parent);
+        }
+    }
+    if let Some(shim) = python3_shim_dir(&py) {
+        if shim.is_dir() {
+            all_paths.retain(|p| p != &shim);
+            all_paths.insert(0, shim);
+        }
+    }
+}
+
 /// Build an enriched PATH environment variable that combines:
 /// 1. The full PATH dynamically resolved from the user's interactive login shell (.bashrc/.profile)
 /// 2. Current process PATH
@@ -542,6 +1022,9 @@ pub(crate) fn enriched_path_env() -> Option<std::ffi::OsString> {
 
     let existing_path = std::env::var_os("PATH");
     let mut all_paths: Vec<PathBuf> = Vec::new();
+
+    #[cfg(windows)]
+    prepend_windows_python(&mut all_paths);
 
     for path in candidates {
         if path.is_dir() && !all_paths.contains(&path) {
@@ -697,6 +1180,160 @@ mod tests {
     fn enriched_path_env_returns_valid_paths() {
         let env_path = enriched_path_env();
         assert!(env_path.is_some());
+    }
+
+    #[test]
+    fn windows_apps_python_stub_is_alias_real_install_is_not() {
+        use std::path::Path;
+        assert!(is_windows_apps_alias(Path::new(
+            r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\python3.exe"
+        )));
+        assert!(is_windows_apps_alias(Path::new(
+            r"C:\Users\me\AppData\Local\Microsoft\WindowsApps\python.exe"
+        )));
+        assert!(!is_windows_apps_alias(Path::new(
+            r"F:\Python\Python312\python.exe"
+        )));
+        assert!(!is_windows_apps_alias(Path::new(
+            r"C:\Program Files\Python312\python.exe"
+        )));
+        assert!(is_windows_apps_alias(Path::new(
+            "/c/Users/me/AppData/Local/Microsoft/WindowsApps/python3"
+        )));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn detect_windows_python_skips_store_stub() {
+        if let Some(py) = detect_windows_python() {
+            assert!(
+                !is_windows_apps_alias(&py),
+                "must not pick the Store stub: {}",
+                py.display()
+            );
+            assert!(
+                py.file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|n| n.eq_ignore_ascii_case("python.exe")
+                        || n.eq_ignore_ascii_case("python3.exe")),
+                "unexpected interpreter name: {}",
+                py.display()
+            );
+        }
+    }
+
+    #[test]
+    fn rewrite_python3_heads_only_command_position() {
+        use std::path::Path;
+        let real = Path::new(r"F:/Python/Python312/python.exe");
+        assert_eq!(
+            rewrite_python3_heads("python3 --version", real),
+            "F:/Python/Python312/python.exe --version"
+        );
+        assert_eq!(
+            rewrite_python3_heads("python3 --version || python --version", real),
+            "F:/Python/Python312/python.exe --version || python --version"
+        );
+        assert_eq!(
+            rewrite_python3_heads("echo python3; python3 -c 'print(1)'", real),
+            "echo python3; F:/Python/Python312/python.exe -c 'print(1)'"
+        );
+        assert_eq!(
+            rewrite_python3_heads("python3-config --includes", real),
+            "python3-config --includes"
+        );
+    }
+
+    #[test]
+    fn rewrite_rg_pipeline_to_grep_e() {
+        assert_eq!(
+            rewrite_tool_heads(
+                r#"git diff -U3 a.rs | rg -n "truncated" || true"#,
+                &["rg.exe", "rg"],
+                "grep -E",
+            ),
+            r#"git diff -U3 a.rs | grep -E -n "truncated" || true"#,
+        );
+        assert_eq!(
+            rewrite_tool_heads("rga foo", &["rg.exe", "rg"], "grep -E"),
+            "rga foo",
+        );
+    }
+
+    #[test]
+    fn rewrite_unquoted_drive_and_unc_paths() {
+        assert_eq!(
+            rewrite_unquoted_windows_paths(r"rustfmt C:\foo\bar.rs"),
+            "rustfmt C:/foo/bar.rs",
+        );
+        assert_eq!(
+            rewrite_unquoted_windows_paths(r"cd E:\code\jeikcode && cargo test"),
+            "cd E:/code/jeikcode && cargo test",
+        );
+        assert_eq!(
+            rewrite_unquoted_windows_paths(r"ls \\server\share\dir"),
+            "ls //server/share/dir",
+        );
+        assert_eq!(
+            rewrite_unquoted_windows_paths(r"echo 'C:\foo\bar'"),
+            r"echo 'C:\foo\bar'",
+        );
+        assert_eq!(
+            rewrite_unquoted_windows_paths(r#"echo "C:\foo""#),
+            r#"echo "C:\foo""#,
+        );
+        assert_eq!(
+            rewrite_unquoted_windows_paths(r"git log origin\main"),
+            r"git log origin\main",
+        );
+        assert_eq!(
+            rewrite_unquoted_windows_paths("printf 'a\\n'"),
+            "printf 'a\\n'",
+        );
+        assert_eq!(
+            rewrite_unquoted_windows_paths("ls C:/already/forward"),
+            "ls C:/already/forward",
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn python3_shim_runs_real_cpython() {
+        use std::path::Path;
+        let Some(py) = detect_windows_python() else {
+            return;
+        };
+        let path = enriched_path_env().expect("PATH");
+        let shim = std::env::split_paths(&path)
+            .next()
+            .map(|d| d.join("python3.exe"))
+            .expect("shim dir");
+        assert!(
+            shim.is_file(),
+            "python3.exe shim missing at {}",
+            shim.display()
+        );
+        let mut cmd = tokio::process::Command::new(&shim);
+        cmd.args(["-c", "import sys; print(sys.executable)"]);
+        suppress_console_window(&mut cmd);
+        let out = cmd.output().await.expect("spawn shim");
+        assert!(
+            out.status.success(),
+            "shim failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let exe = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !is_windows_apps_alias(Path::new(exe.trim())),
+            "shim resolved to Store stub: {}",
+            exe.trim()
+        );
+        let rewritten = rewrite_python3_heads("python3 --version", &py);
+        assert!(
+            rewritten.contains("python.exe") || rewritten.contains("Python"),
+            "rewrite did not insert real interpreter: {rewritten}"
+        );
+        assert!(!rewritten.starts_with("python3 "), "{rewritten}");
     }
 
     #[test]

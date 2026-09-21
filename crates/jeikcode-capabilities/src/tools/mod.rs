@@ -24,8 +24,8 @@
 //! which reads `risk`, consults an injected [`PermissionStore`], and otherwise
 //! round-trips the driver for a decision.
 
-use jeikcode_kernel::tool::{ToolRegistry, ToolResult};
 use ignore::WalkBuilder;
+use jeikcode_kernel::tool::{ToolRegistry, ToolResult};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,6 +39,7 @@ pub mod approval;
 pub mod ast_grep;
 pub mod bash;
 pub mod bash_ctl;
+pub mod bash_keys;
 pub(crate) mod bash_runtime;
 pub mod bash_workspace_gate;
 pub mod cd;
@@ -86,6 +87,7 @@ pub use bash::{
     ShellOutcome,
 };
 pub use bash_ctl::{BashKillByIdTool, LongBashKeywordActionsTool};
+pub use bash_keys::BashSendKeysTool;
 pub use bash_runtime::bind_session_long_keywords;
 pub use bash_workspace_gate::BashWorkspaceGate;
 pub use cd::ChangeDirTool;
@@ -145,6 +147,7 @@ pub fn coding_tool_names() -> &'static [&'static str] {
             "run_command",
             "long_bash_keyword_actions",
             "bash_kill_by_id",
+            "bash_send_keys",
             "grep",
             "glob",
             "global_search_replace",
@@ -167,6 +170,7 @@ pub fn coding_tool_names() -> &'static [&'static str] {
             "run_command",
             "long_bash_keyword_actions",
             "bash_kill_by_id",
+            "bash_send_keys",
             "grep",
             "glob",
             "global_search_replace",
@@ -200,6 +204,7 @@ pub fn register_coding_tools_with_vision(reg: &mut ToolRegistry, vision: bool) {
     reg.register(Arc::new(BashTool));
     reg.register(Arc::new(LongBashKeywordActionsTool));
     reg.register(Arc::new(BashKillByIdTool));
+    reg.register(Arc::new(BashSendKeysTool));
     reg.register(Arc::new(GrepTool));
     reg.register(Arc::new(GlobTool));
     reg.register(Arc::new(GlobalSearchReplaceTool));
@@ -875,6 +880,7 @@ mod tests {
         "run_command",
         "long_bash_keyword_actions",
         "bash_kill_by_id",
+        "bash_send_keys",
         "grep",
         "glob",
         "global_search_replace",
