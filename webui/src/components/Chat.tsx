@@ -125,6 +125,7 @@ import {
   resolveUserInputRequest,
   toolResultClearsUserInput,
   transcriptLatestUserInputIsResolved,
+  transcriptToolCallIsResolved,
   restoreLiveSnapshot,
   keepCanvasOnEmptyLiveSnapshot,
   stayOnNewSessionLanding,
@@ -1239,10 +1240,17 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
           return;
         }
         if (pending.permission) {
-          updateToolInLastAssistant(pending.permission.call_id, {
-            status: 'waiting_approval',
-          });
-          onPermission(pending.permission as PermissionRequestEvent);
+          const auto =
+            nativeModeRef.current === 'bypass' || modeState.confirmedMode === 'bypass';
+          if (
+            !auto
+            && !transcriptToolCallIsResolved(messagesRef.current, pending.permission.call_id)
+          ) {
+            updateToolInLastAssistant(pending.permission.call_id, {
+              status: 'waiting_approval',
+            });
+            onPermission(pending.permission as PermissionRequestEvent);
+          }
         }
         if (pending.user_input && !transcriptLatestUserInputIsResolved(messagesRef.current)) {
           setUserInputReq(pending.user_input);
@@ -2882,9 +2890,14 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
         break;
       }
       case 'permission_request': {
-        // Mark the tool row as waiting for approval (same as non-sync path)
+        if (
+          nativeModeRef.current === 'bypass'
+          || modeState.confirmedMode === 'bypass'
+          || transcriptToolCallIsResolved(messagesRef.current, e.call_id)
+        ) {
+          break;
+        }
         updateToolInLastAssistant(e.call_id, { status: 'waiting_approval' });
-        // Show the PermissionCard for the live session (calls /live/permission via onDecide)
         setLivePending({ tool_name: e.tool_name, reason: e.reason, call_id: e.call_id, arguments: e.arguments });
         break;
       }
@@ -3898,6 +3911,13 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
         // Always mark the tool row; restore the modal unless a pure observer
         // explicitly opts out (reattach/watch must NOT pass observerOnly — that
         // previously deadlocked Build turns after refresh).
+        if (
+          nativeModeRef.current === 'bypass'
+          || modeState.confirmedMode === 'bypass'
+          || transcriptToolCallIsResolved(messagesRef.current, event.call_id)
+        ) {
+          break;
+        }
         updateToolInLastAssistant(event.call_id, {
           status: 'waiting_approval',
         });

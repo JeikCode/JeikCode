@@ -1026,6 +1026,23 @@ impl ActiveChatRegistry {
         pending_interactive_from_replay(&guard)
     }
 
+    /// True when the turn replay already closed `call_id` (result/output/terminal).
+    /// Stale `pending_permission.json` must not restore a card in that case.
+    async fn replay_resolves_call(&self, session_id: &str, call_id: &str) -> bool {
+        let index = self.inner.read().await;
+        let Some(operation_id) = index.aliases.get(session_id) else {
+            return false;
+        };
+        let Some(operation) = index.operations.get(operation_id) else {
+            return false;
+        };
+        let guard = operation
+            .replay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        replay_resolves_call(&guard, call_id)
+    }
+
     /// Subscribe to a session's turn **if one is already running**, otherwise
     /// park the caller as a standby watcher so `admit` can wake it the instant an
     /// API/native turn starts for this session. This is the event-driven path
@@ -1417,6 +1434,10 @@ fn pending_interactive_from_replay(events: &[ChatEvent]) -> (Option<ChatEvent>, 
                     last_user_input = None;
                 }
             }
+            ChatEvent::ToolOutputChunk { id, .. } => {
+                // Output means the tool already started — approval was granted.
+                resolved_call_ids.insert(id.clone());
+            }
             ChatEvent::Done { .. } | ChatEvent::Stopped | ChatEvent::Error { .. } => {
                 turn_terminal = true;
             }
@@ -1440,6 +1461,16 @@ fn pending_interactive_from_replay(events: &[ChatEvent]) -> (Option<ChatEvent>, 
     });
     let user_input = last_user_input;
     (permission, user_input)
+}
+
+fn replay_resolves_call(events: &[ChatEvent], call_id: &str) -> bool {
+    events.iter().any(|event| match event {
+        ChatEvent::ToolCallResult { id, .. } | ChatEvent::ToolOutputChunk { id, .. } => {
+            id == call_id
+        }
+        ChatEvent::Done { .. } | ChatEvent::Stopped | ChatEvent::Error { .. } => true,
+        _ => false,
+    })
 }
 
 /// Append `event` to the turn replay log, coalescing consecutive text/reasoning
@@ -6601,7 +6632,14 @@ async fn chat_pending(
         .iter()
         .any(|id| id == &session_id);
     let (permission, user_input) = state.active_chats.pending_interactive(&session_id).await;
-    let mut permission_json = permission.map(|ev| match ev {
+    // Auto never parks on tool approval. A leftover pending_permission.json from
+    // Build must not resurrect a ghost card after the user switched to Auto.
+    let auto_mode = live_api::live_current_approval_mode()
+        == crate::approval_mode::ApprovalMode::Auto;
+    let mut permission_json = if auto_mode {
+        None
+    } else {
+        permission.map(|ev| match ev {
         ChatEvent::PermissionRequest {
             session_id,
             tool_name,
@@ -6617,19 +6655,31 @@ async fn chat_pending(
             "arguments": arguments,
         }),
         _ => serde_json::Value::Null,
-    });
-    if permission_json.is_none() || permission_json.as_ref().map(|v| v.is_null()).unwrap_or(false) {
+        })
+    };
+    if !auto_mode
+        && (permission_json.is_none()
+            || permission_json.as_ref().map(|v| v.is_null()).unwrap_or(false))
+    {
         if let Some(pending) =
-            jeikcode_capabilities::session::SessionManager::load_pending_permission_any_project(&session_id)
+            jeikcode_capabilities::session::SessionManager::load_pending_permission_any_project(
+                &session_id,
+            )
         {
-            permission_json = Some(serde_json::json!({
-                "type": "permission_request",
-                "session_id": pending.session_id,
-                "tool_name": pending.tool_name,
-                "reason": pending.reason,
-                "call_id": pending.call_id,
-                "arguments": pending.arguments,
-            }));
+            let stale = state
+                .active_chats
+                .replay_resolves_call(&session_id, &pending.call_id)
+                .await;
+            if !stale {
+                permission_json = Some(serde_json::json!({
+                    "type": "permission_request",
+                    "session_id": pending.session_id,
+                    "tool_name": pending.tool_name,
+                    "reason": pending.reason,
+                    "call_id": pending.call_id,
+                    "arguments": pending.arguments,
+                }));
+            }
         }
     }
     let user_input_json = user_input.map(|ev| match ev {
@@ -11136,6 +11186,27 @@ mod channel_mode_tests {
         ];
         let (perm, _) = pending_interactive_from_replay(&events);
         assert!(perm.is_none(), "resolved call must not restore a card");
+    }
+
+    #[test]
+    fn pending_interactive_from_replay_clears_after_tool_output() {
+        let events = vec![
+            ChatEvent::PermissionRequest {
+                session_id: "s1".into(),
+                tool_name: "edit_file".into(),
+                reason: "Requires approval".into(),
+                call_id: "c1".into(),
+                arguments: "{}".into(),
+            },
+            ChatEvent::ToolOutputChunk {
+                id: "c1".into(),
+                chunk: "writing".into(),
+            },
+        ];
+        let (perm, _) = pending_interactive_from_replay(&events);
+        assert!(perm.is_none(), "output means approval already granted");
+        assert!(replay_resolves_call(&events, "c1"));
+        assert!(!replay_resolves_call(&events, "other"));
     }
 
     #[test]

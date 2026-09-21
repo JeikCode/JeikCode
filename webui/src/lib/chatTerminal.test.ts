@@ -45,6 +45,7 @@ import {
   liveSyncOwnsViewedSession,
   toolResultClearsUserInput,
   transcriptLatestUserInputIsResolved,
+  transcriptToolCallIsResolved,
 } from './chatTerminal.ts';
 
 test('legacy done and stopped are natural completions that preserve queued messages', () => {
@@ -503,6 +504,26 @@ test('a live user-input terminal clears only its matching prompt', () => {
   assert.equal(resolveUserInputRequest(null, 42), null);
   assert.equal(toolResultClearsUserInput('request_user_input'), true);
   assert.equal(toolResultClearsUserInput('bash'), false);
+  assert.equal(
+    transcriptToolCallIsResolved(
+      [{
+        role: 'assistant',
+        parts: [{ kind: 'tool', tool: { id: 'c1', name: 'edit_file', status: 'done' } }],
+      }],
+      'c1',
+    ),
+    true,
+  );
+  assert.equal(
+    transcriptToolCallIsResolved(
+      [{
+        role: 'assistant',
+        parts: [{ kind: 'tool', tool: { id: 'c1', name: 'edit_file', status: 'waiting_approval' } }],
+      }],
+      'c1',
+    ),
+    false,
+  );
   assert.equal(
     transcriptLatestUserInputIsResolved([
       {

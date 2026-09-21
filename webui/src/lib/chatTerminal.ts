@@ -580,9 +580,24 @@ export function toolResultClearsUserInput(name?: string): boolean {
   return name === 'request_user_input';
 }
 
-/** Latest `request_user_input` tool on the canvas already has a result
- * ("No answer was provided", a real answer, etc.). `/chat/pending` must
- * not resurrect the card while TUI keeps chatting. */
+/** Tool row for `callId` already finished — do not resurrect its approval card. */
+export function transcriptToolCallIsResolved(
+  messages: Array<{ role: string; parts: InFlightPart[] }>,
+  callId: string,
+): boolean {
+  for (const message of messages) {
+    if (message.role !== 'assistant') continue;
+    for (const part of message.parts) {
+      if (part.kind !== 'tool' || part.tool?.id !== callId) continue;
+      const status = part.tool?.status;
+      return status === 'done' || status === 'error' || status === 'incomplete';
+    }
+  }
+  return false;
+}
+
+/** Latest `request_user_input` tool on the canvas already has a result.
+ * `/chat/pending` must not resurrect the card while TUI keeps chatting. */
 export function transcriptLatestUserInputIsResolved(
   messages: Array<{ role: string; parts: InFlightPart[] }>,
 ): boolean {

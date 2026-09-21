@@ -2722,6 +2722,11 @@ pub(crate) async fn approval_mode_set(
         state
             .pending_permissions
             .deliver_all(PermissionDecision::AllowOnce);
+        if let Ok(binding) = crate::native_live::binding() {
+            jeikcode_capabilities::session::SessionManager::clear_pending_permission_any_project(
+                &binding.session_id,
+            );
+        }
     }
     Json(ApprovalModeResp {
         ok,
@@ -2746,6 +2751,11 @@ pub(crate) async fn live_mode(
         state
             .pending_permissions
             .deliver_all(PermissionDecision::AllowOnce);
+        if let Ok(binding) = crate::native_live::binding() {
+            jeikcode_capabilities::session::SessionManager::clear_pending_permission_any_project(
+                &binding.session_id,
+            );
+        }
     }
     Json(ApprovalModeResp {
         ok,

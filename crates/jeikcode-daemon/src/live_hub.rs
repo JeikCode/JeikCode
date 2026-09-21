@@ -765,6 +765,9 @@ impl LiveViewHub {
                 .map(|(id, _)| *id)
                 .collect()
         };
+        jeikcode_capabilities::session::SessionManager::clear_pending_permission_any_project(
+            &expected.session_id,
+        );
         if ids.is_empty() {
             return;
         }
