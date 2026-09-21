@@ -14,7 +14,7 @@
 use super::bash_runtime::{
     active_background_tasks, add_live_long_keyword, classify_idle, decision_prompt,
     is_generic_long_keyword, new_bashid, push_background_alert, register_live_bash, tree_is_busy,
-    unregister_live_bash, waiting_for_stdin, BackgroundAlert, IdleAction, LiveBash,
+    unregister_live_bash, waiting_for_stdin, BackgroundAlert, BusyKind, IdleAction, LiveBash,
     KILLED_BY_TOOL_MARK, PROMOTED_MARK,
 };
 use super::{err, ok};
@@ -697,9 +697,26 @@ impl Tool for BashTool {
                         Err(_) => stderr_done = true,
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_millis(1500)) => {
+                _ = tokio::time::sleep(Duration::from_millis(1500)), if started_short => {
                     if waiting_for_stdin(child_pid) {
                         break Drive::Detach;
+                    }
+                    let silent_for = last_byte
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .elapsed();
+                    if silent_for >= Duration::from_secs(2) && has_output() {
+                        let (out, errb) = snapshot();
+                        if dangling_line_prompt(&out, &errb) {
+                            break Drive::Detach;
+                        }
+                        #[cfg(windows)]
+                        let busy = tree_is_busy(child_pid, &job_guard).await;
+                        #[cfg(not(windows))]
+                        let busy = tree_is_busy(child_pid).await;
+                        if busy != BusyKind::Yes {
+                            break Drive::Detach;
+                        }
                     }
                 }
                 status = child.wait() => {
@@ -736,23 +753,10 @@ impl Tool for BashTool {
                         | IdleAction::KillResident
                         | IdleAction::AwaitDecision
                         | IdleAction::DetachWaiter => {
-                            if waiting_for_stdin(child_pid) {
-                                break Drive::Detach;
-                            }
-                            let already_second = live.second_level.swap(true, Ordering::SeqCst);
-                            if second_levell_secs > 0
-                                && !already_second
-                                && !live.promoted.load(Ordering::SeqCst)
-                            {
-                                *last_byte.lock().unwrap_or_else(|e| e.into_inner()) =
-                                    Instant::now();
-                                progress.emit(format!(
-                                    "[bash second-level idle {second_levell_secs}s] \
-                                     still running with no CPU; will detach if it stays idle.\n"
-                                ));
-                            } else {
-                                break Drive::Detach;
-                            }
+                            // Interactive / idle: return bashid now. second_level grace
+                            // existed to avoid KILLING a silent compile; compiles skip
+                            // idle entirely, so the extra 120s just blocks the turn.
+                            break Drive::Detach;
                         }
                     }
                 }
@@ -1904,6 +1908,19 @@ fn emit_live_chunk(
         return;
     }
     progress.emit(text);
+}
+
+/// Last captured bytes do not end in a newline — typical of `input()`, `read`,
+/// `Password:` prompts. Used as a cross-platform stdin-wait signal because
+/// Windows has no `/proc/.../syscall`.
+fn dangling_line_prompt(stdout: &[u8], stderr: &[u8]) -> bool {
+    fn dangling(buf: &[u8]) -> bool {
+        match buf.last() {
+            Some(&b) => b != b'\n' && b != b'\r',
+            None => false,
+        }
+    }
+    dangling(stdout) || dangling(stderr)
 }
 
 /// Append cwd / missing-tool guidance when a command failed for a platform reason
@@ -4590,6 +4607,45 @@ mod tests {
             "expected GOT:hello in `{combined}`"
         );
         bash_runtime::kill_by_id(&bashid);
+    }
+
+    #[test]
+    fn dangling_line_prompt_detects_input_prompts() {
+        assert!(super::dangling_line_prompt(b"\xe8\xaf\xb7\xe8\xbe\x93\xe5\x85\xa5\xe7\xac\xac\xe4\xb8\x80\xe4\xb8\xaa\xe5\x8a\xa0\xe6\x95\xb0: ", b""));
+        assert!(!super::dangling_line_prompt(b"hello\n", b""));
+        assert!(!super::dangling_line_prompt(b"", b""));
+        assert!(super::dangling_line_prompt(b"", b"Password: "));
+    }
+
+    #[tokio::test]
+    async fn interactive_python_input_detaches_quickly() {
+        use crate::tools::bash_runtime;
+        let d = tempfile::tempdir().unwrap();
+        let ctx = ctx(d.path());
+        let cmd = "python -c \"import sys; sys.stdout.write('PROMPT>'); sys.stdout.flush(); x=input(); print('GOT'+x)\"";
+        let args = serde_json::json!({ "command": cmd }).to_string();
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            BashTool.execute(&args, &ctx),
+        )
+        .await;
+        let res = match res {
+            Ok(r) => r,
+            Err(_) => panic!("interactive python occupied the turn >10s; should detach"),
+        };
+        assert!(!res.is_error, "{}", res.content);
+        assert!(
+            res.content.contains("bashid") || res.content.contains("Detached"),
+            "expected detach with bashid, got: {}",
+            res.content
+        );
+        if let Some(id) = bash_runtime::active_background_tasks()
+            .into_iter()
+            .find(|t| t.command.contains("PROMPT"))
+            .map(|t| t.bashid)
+        {
+            bash_runtime::kill_by_id(&id);
+        }
     }
 
     #[test]
