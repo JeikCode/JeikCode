@@ -5,9 +5,9 @@
 use super::{err, looks_binary, not_found_hint, ok, ok_with_images, resolve_path};
 use crate::tool_feedback::{format_path_not_found, parse_tool_args};
 use async_trait::async_trait;
+use base64::Engine;
 use jeikcode_kernel::message::ImageContent;
 use jeikcode_kernel::tool::{Tool, ToolContext, ToolResult};
-use base64::Engine;
 use serde::Deserialize;
 use serde_json::json;
 

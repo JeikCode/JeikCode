@@ -1045,12 +1045,12 @@ fn render_task_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream::{self, BoxStream};
+    use futures::StreamExt;
     use jeikcode_kernel::message::Message;
     use jeikcode_kernel::provider::ChatOptions;
     use jeikcode_kernel::stream::{ProviderError, StreamEvent};
     use jeikcode_kernel::tool::{ProgressSink, ToolDef, ToolRegistry};
-    use futures::stream::{self, BoxStream};
-    use futures::StreamExt;
     use tokio_util::sync::CancellationToken;
 
     /// Scripted provider: `Some(reply)` → one text turn then clean stop;

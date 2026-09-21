@@ -9,10 +9,10 @@ use super::read::lenient_usize;
 use super::{err, for_each_project_entry, not_found_hint, ok, resolve_path};
 use crate::tool_feedback::{format_path_not_found, parse_tool_args};
 use async_trait::async_trait;
-use jeikcode_kernel::tool::{Tool, ToolContext, ToolResult};
 use globset::{GlobBuilder, GlobMatcher};
 use grep::regex::{RegexMatcher, RegexMatcherBuilder};
 use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
+use jeikcode_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -1047,11 +1047,19 @@ mod tests {
     async fn finds_gitignored_upload_store() {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join(".git")).unwrap();
-        std::fs::write(d.path().join(".gitignore"), ".jeikcode_store/\nhidden.txt\n").unwrap();
+        std::fs::write(
+            d.path().join(".gitignore"),
+            ".jeikcode_store/\nhidden.txt\n",
+        )
+        .unwrap();
         std::fs::write(d.path().join("hidden.txt"), "NEEDLE hidden\n").unwrap();
         std::fs::write(d.path().join("keep.rs"), "NEEDLE keep\n").unwrap();
         std::fs::create_dir_all(d.path().join(".jeikcode_store")).unwrap();
-        std::fs::write(d.path().join(".jeikcode_store/upload.txt"), "NEEDLE upload\n").unwrap();
+        std::fs::write(
+            d.path().join(".jeikcode_store/upload.txt"),
+            "NEEDLE upload\n",
+        )
+        .unwrap();
         let r = GrepTool
             .execute(r#"{"pattern":"NEEDLE"}"#, &ctx(d.path()))
             .await;

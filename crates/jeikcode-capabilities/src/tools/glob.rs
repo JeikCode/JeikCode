@@ -7,8 +7,8 @@
 use super::{err, for_each_project_entry, is_absolute_path, not_found_hint, ok, resolve_path};
 use crate::tool_feedback::{format_path_not_found, parse_tool_args};
 use async_trait::async_trait;
-use jeikcode_kernel::tool::{Tool, ToolContext, ToolResult};
 use globset::GlobBuilder;
+use jeikcode_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -614,14 +614,16 @@ mod tests {
     async fn finds_gitignored_upload_store() {
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join(".git")).unwrap();
-        std::fs::write(d.path().join(".gitignore"), ".jeikcode_store/\nsecret.txt\n").unwrap();
+        std::fs::write(
+            d.path().join(".gitignore"),
+            ".jeikcode_store/\nsecret.txt\n",
+        )
+        .unwrap();
         std::fs::write(d.path().join("secret.txt"), "").unwrap();
         std::fs::create_dir_all(d.path().join(".jeikcode_store")).unwrap();
         std::fs::write(d.path().join(".jeikcode_store/notes.md"), "hello").unwrap();
         std::fs::write(d.path().join("keep.rs"), "").unwrap();
-        let r = GlobTool
-            .execute(r#"{"pattern":"*"}"#, &ctx(d.path()))
-            .await;
+        let r = GlobTool.execute(r#"{"pattern":"*"}"#, &ctx(d.path())).await;
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("keep.rs"), "{}", r.content);
         assert!(

@@ -426,12 +426,12 @@ fn find_build_command(wd: &Path) -> Option<(String, std::path::PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::stream::{self, BoxStream};
+    use futures::StreamExt;
     use jeikcode_kernel::message::Message;
     use jeikcode_kernel::provider::ChatOptions;
     use jeikcode_kernel::stream::{ProviderError, StreamEvent};
     use jeikcode_kernel::tool::{ProgressSink, ToolDef, ToolRegistry};
-    use futures::stream::{self, BoxStream};
-    use futures::StreamExt;
     use tokio_util::sync::CancellationToken;
 
     /// The build-verification probe runs under `cmd.exe /C` on Windows, where the

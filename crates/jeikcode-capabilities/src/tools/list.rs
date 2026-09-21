@@ -190,7 +190,9 @@ fn fold(lines: &[(usize, String)]) -> String {
 }
 
 fn format_skipped_dir(name: &str) -> String {
-    format!("{name}/ (skipped: build/cache dir; pass target_directory=\"{name}\" to inspect directly)")
+    format!(
+        "{name}/ (skipped: build/cache dir; pass target_directory=\"{name}\" to inspect directly)"
+    )
 }
 
 /// Collect the tree as `(depth, line)` pairs in pre-order traversal:
