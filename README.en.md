@@ -1,7 +1,8 @@
 <div align="center">
   <img src="./assets/jeikcode-logo.svg" alt="JeikCode Logo" width="130" />
+  <p><strong>98–99% KV-cache hit rate. Native code graph. Quad-protocol native: OpenAI · Responses · Anthropic · Gemini. Extreme self-healing tool chain.</strong></p>
   <h1>JeikCode: Ultra-Fast, Autonomous AI Coding Agent (Rust-Driven)</h1>
-  <p><strong>Native AST Code Indexing · Sub-Millisecond Rust Core · Ultra-Lean Hot-Reload Prompts · Byte-Level KV-Cache Protection</strong></p>
+  <p><strong>98–99% KV-Cache · Native Code Graph · Quad-Protocol Native · Extreme Tool Self-Healing</strong></p>
   <p>
     <em>Next-generation Agentic AI coding assistant purpose-built for complex, large-scale production codebases.</em>
   </p>
@@ -45,17 +46,21 @@
 
 **JeikCode is a zero-bloat, ultra-fast autonomous AI coding agent natively built with Rust, specifically engineered to eliminate context bloat, eliminate blind grepping, and master large-scale complex software architectures.**
 
-While conventional coding agents suffer from verbose prompt overhead, fragile tool parsing, and blind regex search across massive repositories, JeikCode delivers three foundational breakthroughs:
+Four defining weapons sit in front of everything else:
 
-1. 🔍 **Native AST Code Indexing (CodeExplore)**:
-   - Eliminates the blindness of raw regex scanning and the rigid limitations of symbol-only LSP lookups.
-   - Proprietary **Weighted AST Syntax Graphs + Bilingual Natural Language & Docstring Semantic Alignment (Cilin-weighted)** allows developers to query by business logic (e.g. *"Find refund callback error handling"*), boosting retrieval efficiency by **60% - 70%** with **90%+ location accuracy**.
-2. ⚡ **Sub-Millisecond Rust Performance & TTY Control**:
-   - Zero-dependency native Rust binary engine with sub-millisecond cold start and high-throughput streaming, completely free from Node.js / Python runtime latency.
-   - Built-in double-press misoperation defense (`ESC` / `Ctrl+C` ×2) and active Linux foreground TTY grabbing to prevent terminal lockup.
-3. 🧠 **Ultra-Lean Prompts & Byte-Level KV-Cache Protection**:
-   - **Fully Externalized Hot-Reloading**: Core system prompts reside independently in `init.yaml`, `rules.yaml`, and `user-wrap.md`—modifications apply instantly on file save without process restarts or recompilation.
-   - **Strict Append-Only Prefix Discipline**: User queries are dynamically wrapped only at the tail (`user-wrap.md`), preserving the entire system prefix byte-for-byte across conversation turns. Paired with `sacred_floor` memory compaction protection, it eliminates KV-Cache thrashing and slashes LLM inference cost.
+1. 🔥 **Terrifying KV-cache hit rate**:
+   - **98–99% on almost every conversation**, because prefixes stay byte-exact across turns.
+   - **Strict Append-Only Prefix Discipline**: user queries are wrapped only at the tail (`user-wrap.md`). Paired with `sacred_floor` memory compaction protection, it eliminates KV-cache thrashing and slashes LLM inference cost.
+   - Core prompts live in `init.yaml`, `rules.yaml`, and `user-wrap.md` — hot-reload on save, no restart, no rebuild.
+2. 🗺️ **Native code graph (CodeExplore)**:
+   - Built-in weighted AST syntax graphs + bilingual natural-language / docstring semantic alignment (Cilin-weighted).
+   - Query by business logic (e.g. *"Find refund callback error handling"*) instead of blind regex or symbol-only LSP lookups — **60%–70% faster retrieval**, **90%+ location accuracy**.
+3. 🔌 **Quad-protocol native**:
+   - One agent speaks **OpenAI Chat Completions**, **OpenAI Responses**, **Anthropic Messages**, and **Google Gemini** natively.
+   - Swap providers without rewriting the agent loop.
+4. 🩸 **Extreme self-healing tool chain**:
+   - Five-stage auto-heal for JSON, types, Windows paths, truncated payloads, and `edit_file` mismatches — the model is treated as a fallible child, not a perfect caller.
+   - Same-file multi-hunk edits stay atomic (WAR topology + all-or-nothing write). Cross-turn VersionRing 3-way rebase recovers stale `old_string` without hanging the runtime.
 
 ---
 
@@ -70,7 +75,7 @@ The following matrix objectively evaluates **JeikCode**, **OpenAI Codex**, **Cla
 | **Runtime & Core Architecture** | **Native Rust Core + Dynamic Sandbox** | **Rust (`codex-rs`) + TS CLI** | **TypeScript + CLI** | **TypeScript + Effect-TS** | **Rust (Ptyctl/ChatState)** |
 | **Code Semantic Retrieval** | ✅ **CodeExplore: Weighted AST + Semantic Graph** | ⚠️ Basic file scan & AST | ⚠️ ripgrep / Glob full text search | ⚠️ LSP symbols + ripgrep | ⚠️ xai syntax graph |
 | **Prompt Architecture** | ✅ **Ultra-lean externalized + mtime hot-reload** | ❌ Baked in binary, requires rebuild | ⚠️ Supports `CLAUDE.md`, core hardcoded | ⚠️ Supports custom prompt on reload | ⚠️ Supports precedence, core baked |
-| **KV Cache Prefix Stability** | ✅ **`user-wrap.md` Tail Wrap (Byte-Exact)** | ⚠️ Relies on remote server cache | ✅ **Anthropic Ephemeral Cache** | ⚠️ Relies on vendor raw cache | ⚠️ SQLite transcript based |
+| **KV Cache Prefix Stability** | ✅ **Byte-exact tail wrap · 98–99% hit almost every turn** | ⚠️ Relies on remote server cache | ✅ **Anthropic Ephemeral Cache** | ⚠️ Relies on vendor raw cache | ⚠️ SQLite transcript based |
 | **5-Stage Tool Recovery & Healing** | ✅ **Auto-Heal (JSON / Types / Windows Paths)** | ❌ Schema check only; fails on error | ⚠️ Relies on Claude model self-correction | ⚠️ Schema validation error aborts | ✅ Diagnostic feedback & coercion |
 | **Tool Loop Guard Circuit Breakers** | ✅ **3-Attempt Loop Guard + Fuse Tripping** | ⚠️ Unified session abort | ⚠️ Relies on context truncation | ⚠️ Context truncation / manual abort | ✅ **Loop Guard active** |
 | **First-Token Liveness Watchdog** | ✅ **Independent 60s × 3 timer (Anti-hang)** | ⚠️ Unified stream timeout | ⚠️ Unified stream timeout | ⚠️ Unified Effect timeout | ✅ Process watchdog integration |

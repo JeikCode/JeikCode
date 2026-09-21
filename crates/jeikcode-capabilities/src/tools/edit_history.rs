@@ -9,14 +9,19 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 /// Maximum historical snapshots retained per file in memory.
 pub const MAX_VERSIONS_PER_FILE: usize = 32;
 
+/// Snapshots are `Arc<str>` so `all_versions_reverse` is a pointer bump under
+/// the global `FILE_HISTORY` mutex instead of memcpy-ing up to 32 full files.
+/// Holding that lock across a 232 KB × 32 clone is what made concurrent
+/// `edit_file` / `parallel_edit_files` look deadlocked.
 #[derive(Debug, Clone)]
 pub struct FileVersion {
-    pub content: String,
+    pub content: Arc<str>,
     pub timestamp: std::time::Instant,
 }
 
@@ -31,16 +36,17 @@ pub struct VersionRing {
 
 impl VersionRing {
     pub fn push(&mut self, content: String) {
+        let content: Arc<str> = Arc::from(content);
         if self.initial_base.is_none() {
             self.initial_base = Some(FileVersion {
-                content: content.clone(),
+                content: Arc::clone(&content),
                 timestamp: std::time::Instant::now(),
             });
         }
         if self
             .versions
             .back()
-            .map(|v| v.content == content)
+            .map(|v| v.content.as_ref() == content.as_ref())
             .unwrap_or(false)
         {
             return;
@@ -54,16 +60,16 @@ impl VersionRing {
         });
     }
 
-    /// Iterates through historical versions from newest to oldest.
-    /// Guarantees that `initial_base` is always present at the end even after many revisions.
-    pub fn all_versions_reverse(&self) -> Vec<String> {
+    /// Newest → oldest. Cheap (`Arc` clones) so the caller can drop `FILE_HISTORY`
+    /// before running heal / 3-way work.
+    pub fn all_versions_reverse(&self) -> Vec<Arc<str>> {
         let mut out = Vec::new();
         for v in self.versions.iter().rev() {
-            out.push(v.content.clone());
+            out.push(Arc::clone(&v.content));
         }
         if let Some(base) = &self.initial_base {
-            if !out.iter().any(|c| c == &base.content) {
-                out.push(base.content.clone());
+            if !out.iter().any(|c| c.as_ref() == base.content.as_ref()) {
+                out.push(Arc::clone(&base.content));
             }
         }
         out
@@ -119,23 +125,40 @@ pub fn try_history_rebase(
     new_string: &str,
     replace_all: bool,
 ) -> Option<RebaseSuccess> {
+    try_history_rebase_cancel(path, current, old_string, new_string, replace_all, None)
+}
+
+/// Same as [`try_history_rebase`], but bails between snapshots when `cancel` fires
+/// so Esc/Ctrl-C can reclaim the async worker instead of waiting out a 32-deep probe.
+pub fn try_history_rebase_cancel(
+    path: &Path,
+    current: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Option<RebaseSuccess> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let history: Vec<String> = {
+    // Clone Arcs under the lock, then DROP it before any heal/diff work. A full-file
+    // memcpy here used to pin every concurrent editor on FILE_HISTORY.
+    let history: Vec<Arc<str>> = {
         let map = FILE_HISTORY.lock().unwrap_or_else(|e| e.into_inner());
         let ring = map.get(&canonical)?;
         ring.all_versions_reverse()
     };
 
     for base in &history {
-        if base == current {
+        if cancel.is_some_and(|c| c.is_cancelled()) {
+            return None;
+        }
+        if base.as_ref() == current {
             continue; // Already tried against current
         }
 
-        // Check if old_string matches on this historical base
         if let Ok((theirs, _count, _kind, _actual)) =
             super::edit::apply_hunk_direct(base, old_string, new_string, replace_all)
         {
-            if theirs == *base {
+            if theirs == *base.as_ref() {
                 continue;
             }
             if let Some(res) = perform_3way_rebase(base, current, &theirs) {
@@ -145,6 +168,27 @@ pub fn try_history_rebase(
     }
 
     None
+}
+
+const REBASE_DIFF_TIMEOUT: Duration = Duration::from_millis(200);
+
+fn bounded_patience_diff<'a, 'b>(
+    old: &'a str,
+    new: &'b str,
+) -> Option<similar::TextDiff<'a, 'b, 'a, str>> {
+    // similar 2.7 has no `deadline_reached()` on TextDiff; a timed-out run still
+    // returns a *coarse but valid* diff. Using that for 3-way merge can silently
+    // apply the wrong hunk. If we hit the budget, abort the rebase instead.
+    let t0 = Instant::now();
+    let mut config = similar::TextDiff::configure();
+    config.algorithm(similar::Algorithm::Patience);
+    config.timeout(REBASE_DIFF_TIMEOUT);
+    let diff = config.diff_lines(old, new);
+    if t0.elapsed() >= REBASE_DIFF_TIMEOUT {
+        None
+    } else {
+        Some(diff)
+    }
 }
 
 /// Performs line-based 3-way merge between:
@@ -157,9 +201,10 @@ pub fn perform_3way_rebase(base: &str, ours: &str, theirs: &str) -> Option<Rebas
     let theirs_lines: Vec<&str> = theirs.lines().collect();
 
     // 1. Identify what `theirs` changed relative to `base`.
-    let diff_bt = similar::TextDiff::configure()
-        .algorithm(similar::Algorithm::Patience)
-        .diff_lines(base, theirs);
+    // Timeout: unbounded Patience on two 3k-line files can pin the executor the
+    // same way the old closest-match Levenshtein did. A timed-out (coarse) diff
+    // must NOT be used for merge — abort the rebase instead of applying a wrong hunk.
+    let diff_bt = bounded_patience_diff(base, theirs)?;
 
     let mut theirs_changes = Vec::new(); // Vec<(base_start, base_end, replacement_lines)>
     for op in diff_bt.ops() {
@@ -195,9 +240,7 @@ pub fn perform_3way_rebase(base: &str, ours: &str, theirs: &str) -> Option<Rebas
     }
 
     // 2. Diff `base` vs `ours` to map line coordinates and detect conflicts.
-    let diff_bo = similar::TextDiff::configure()
-        .algorithm(similar::Algorithm::Patience)
-        .diff_lines(base, ours);
+    let diff_bo = bounded_patience_diff(base, ours)?;
 
     // Build a map of base line index -> ours line index and check for conflicts.
     // We check if any ours change overlaps with any theirs_changes.
@@ -411,14 +454,48 @@ mod tests {
             "should hold 32 recent versions + 1 pinned initial base"
         );
         assert_eq!(
-            all.first().unwrap(),
+            all.first().unwrap().as_ref(),
             "fn step_40() { 40 }",
             "newest version first"
         );
         assert_eq!(
-            all.last().unwrap(),
-            &v0,
+            all.last().unwrap().as_ref(),
+            v0.as_str(),
             "pinned initial base must remain at the end"
+        );
+    }
+
+    #[test]
+    fn history_rebase_probe_skips_diagnostic_on_large_unrelated_hunk() {
+        // Each historical snapshot used to run the full closest-match Levenshtein
+        // diagnostic on miss. 8 versions × a 240-line ghost hunk × a 3k-line file
+        // hung for minutes. Probing must stay on the heal path only.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.tsx");
+        let mut content = String::new();
+        for i in 0..3000 {
+            content.push_str(&format!("line_{i} = {i};\n"));
+        }
+        std::fs::write(&path, &content).unwrap();
+        clear_history(&path);
+        record_version(&path, &content);
+        for v in 1..=8 {
+            content.push_str(&format!("// rev {v}\n"));
+            record_version(&path, &content);
+        }
+        let mut old = String::new();
+        for i in 0..240 {
+            old.push_str(&format!(
+                "        <div className=\"ghost-{i}\">nope</div>\n"
+            ));
+        }
+        let t0 = std::time::Instant::now();
+        let res = try_history_rebase(&path, &content, &old, "x", false);
+        let elapsed = t0.elapsed();
+        assert!(res.is_none(), "unrelated hunk must not rebase");
+        assert!(
+            elapsed < std::time::Duration::from_millis(1500),
+            "history rebase probe hung on diagnostic: {elapsed:?}"
         );
     }
 }

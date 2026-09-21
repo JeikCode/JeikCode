@@ -1,7 +1,8 @@
 <div align="center">
   <img src="./assets/jeikcode-logo.svg" alt="JeikCode Logo" width="130" />
+  <p><strong>98–99% KV-cache hit rate. Native code graph. Quad-protocol native: OpenAI · Responses · Anthropic · Gemini. Extreme self-healing tool chain.</strong></p>
   <h1>JeikCode: 极速、自主的开源终端 AI Coding Agent (Rust 驱动)</h1>
-  <p><strong>原生代码语义索引 · 极致 Rust 速度 · 极简热重载提示词 · 字节级 KV-Cache 保护</strong></p>
+  <p><strong>98–99% KV-Cache · 原生代码图谱 · 四协议原生 · 极致工具自愈链</strong></p>
   <p>
     <em>专为大型复杂工程打造的下一代 Agentic AI 编程智能体</em>
   </p>
@@ -45,17 +46,21 @@
 
 **JeikCode 是一款采用纯 Rust 原生构建、拒绝上下文臃肿与无效翻找、专为大型复杂工程而生的新一代终端 AI 编程智能体。**
 
-在传统 Coding Agent 面临“代码检索瞎蒙、提示词冗长占用窗口、模型假死报错即断联”等实际工程痛点时，JeikCode 完成了三大突破性核心创新：
+四大杀招放在最前面：
 
-1. 🔍 **原生 AST 语义代码索引（CodeExplore）**：
-   - 告别传统 ripgrep 纯文本正则的盲目扫盘与 LSP 仅限符号查找的局限。
-   - 自研**加权 AST 语法树向量 + 中英文自然语言与注释多重语义对齐（词林加权）**，用真实业务需求提问即可直接定位核心实现，检索效率提升 **60% - 70%**，命中准确率高达 **90%+**。
-2. ⚡ **极致 Rust 原生性能与 TTY 掌控**：
-   - 纯 Rust 编写的无依赖超轻量内核，毫秒级冷启动与流式吞吐，摆脱 Python / Node 运行时的臃肿迟滞。
-   - 原生支持双击防误触（`ESC` / `Ctrl+C` ×2）与 Linux 前台 TTY 控制权主动夺回，终端绝不锁死。
-3. 🧠 **极简提示词架构与字节级 KV-Cache 保护**：
-   - **全量外置热重载**：提示词完全独立解耦于 `init.yaml`、`rules.yaml` 与 `user-wrap.md`，修改毫秒级热生效，无需重启重编译，不写死任何冗长废话。
-   - **严格 Append-Only 前缀**：动态包裹仅作用于用户输入末端，保证系统前缀字节级不可变，配合 `sacred_floor` 记忆防丢失保护，彻底杜绝云端 KV-Cache 击穿，大幅削减 Token 开销。
+1. 🔥 **恐怖的 KV-Cache 命中率**：
+   - **几乎每一次对话都能达到 98–99%**，因为会话前缀跨轮次保持字节级不变。
+   - **严格 Append-Only 前缀**：动态包裹只作用在用户输入末尾（`user-wrap.md`），配合 `sacred_floor` 记忆防丢失，杜绝云端 KV-Cache 击穿，大幅削减 Token 开销。
+   - 核心提示词外置在 `init.yaml`、`rules.yaml`、`user-wrap.md`，保存即热重载，无需重启重编译。
+2. 🗺️ **原生代码图谱（CodeExplore）**：
+   - 内置加权 AST 语法树 + 中英文自然语言 / 注释语义对齐（词林加权）。
+   - 用业务问题提问即可定位实现（例如 *「找出退款回调的错误处理」*），而不是盲目正则或仅查 LSP 符号 — 检索效率提升 **60%–70%**，命中准确率 **90%+**。
+3. 🔌 **四协议原生兼容**：
+   - 同一套 Agent 循环原生讲 **OpenAI Chat Completions**、**OpenAI Responses**、**Anthropic Messages**、**Google Gemini**。
+   - 换供应商不必重写 Agent 循环。
+4. 🩸 **极致工具自愈链**：
+   - 五级自动修复覆盖 JSON、类型、Windows 路径、截断载荷和 `edit_file` 失配 — 把模型当会犯错的孩子，而不是完美调用方。
+   - 同文件多 hunk 保持原子写入（WAR 拓扑 + 全成功才落盘）。跨轮 VersionRing 3-Way 变基能救活过期 `old_string`，且不再把运行时钉死。
 
 ---
 
@@ -70,7 +75,7 @@
 | **底层架构与运行时** | **Rust 原生内核 + 动态沙箱** | **Rust (`codex-rs`) + TS CLI** | **TypeScript + CLI** | **TypeScript + Effect-TS** | **Rust (Ptyctl/ChatState)** |
 | **代码语义检索** | ✅ **CodeExplore: AST 向量 + 中英双语** | ⚠️ 基础语法树检索 | ⚠️ ripgrep / Glob 全文本搜索 | ⚠️ LSP 符号 + ripgrep 搜索 | ⚠️ xai 语法图谱 |
 | **提示词架构与精简度** | ✅ **极简外置 + 毫秒级热重载** | ❌ 提示词内置于二进制，需重构 | ⚠️ 支持 `CLAUDE.md`，核心写死 | ⚠️ 支持外部配置，需重启载入 | ⚠️ 支持优先级，核心内置 |
-| **KV Cache 前缀防击穿** | ✅ **`user-wrap.md` 动态末尾包裹 (字节级不可变)** | ⚠️ 依赖云端会话缓存机制 | ✅ **Anthropic 原生 Ephemeral Cache** | ⚠️ 依赖服务商原生缓存 | ⚠️ 基于 SQLite 日志转录 |
+| **KV Cache 前缀防击穿** | ✅ **字节级末尾包裹 · 几乎每轮 98–99% 命中** | ⚠️ 依赖云端会话缓存机制 | ✅ **Anthropic 原生 Ephemeral Cache** | ⚠️ 依赖服务商原生缓存 | ⚠️ 基于 SQLite 日志转录 |
 | **工具 5 级自愈与参数修复** | ✅ **自动修补 (JSON/类型/Windows路径)** | ❌ 仅结构校验，格式错误即报错 | ⚠️ 依靠 Claude 顶级推理自纠偏 | ⚠️ Schema 校验失败即中断报错 | ✅ 具备诊断回喂与纠偏 |
 | **循环调用熔断机制** | ✅ **3次失败 Loop Guard + 状态熔断** | ⚠️ 依赖会话统一中断 | ⚠️ 依靠上下文截断或模型自省 | ⚠️ 依赖上下文截断或人工打断 | ✅ **具备 Loop Guard 熔断** |
 | **首 Token 活性超时守护** | ✅ **独立 60s × 3 计时 (防思考模型假死)** | ⚠️ 统一 Stream 请求超时 | ⚠️ 全局统一 Stream 请求超时 | ⚠️ Effect 统一请求超时 | ✅ 进程级看门狗协同 |

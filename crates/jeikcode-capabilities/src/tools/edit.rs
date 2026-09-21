@@ -5,6 +5,16 @@
 //! optional same-file `edits` array, optional `replace_all`. Line numbers are
 //! hints. Weak-model quirks (stringified arrays, stale line numbers, CRLF /
 //! indent / blank-line drift) are repaired internally and are not advertised.
+//!
+//! # Match pipeline (heal vs diagnose vs rebase)
+//!
+//! 1. **Exact** byte/EOL match (O(file + needle)).
+//! 2. **Heal** cascade (shared [`NormalizedFile`]: trim / token / comment / block-anchor /
+//!    boundary). Sliding windows compare precomputed slices — never allocate a window
+//!    `Vec` per line, never run character Levenshtein on a whole hunk.
+//! 3. **Diagnose** (user-facing miss only, once): rolling token-bag + tiny-hunk line
+//!    similarity, then one bounded `similar` TextDiff. History rebase probing uses
+//!    [`apply_hunk_direct`] and stops after (2).
 
 pub(crate) use super::coerce_eol;
 use super::{err, ok, resolve_path};
@@ -167,68 +177,32 @@ impl Tool for EditFileTool {
         let content = decoded.text;
         let file_encoding = decoded.encoding;
 
-        // Record the initial on-disk snapshot into VersionRing before editing
-        crate::tools::edit_history::record_version(&path, &content);
-
-        // Topologically sort hunks if multiple hunks are present (WAR dependency & bottom-up)
-        let hunks = if hunks.len() > 1 {
-            sort_hunks_topologically(&content, &hunks)
-        } else {
-            hunks
+        // CPU-bound heal / diagnose / 3-way rebase MUST NOT run on the async worker:
+        // the old Levenshtein diagnostic pinned the runtime for minutes, so Esc/Ctrl-C
+        // (ctx.cancel) could not be polled — a user-visible deadlock. spawn_blocking
+        // plus cooperative cancel checks keep the event loop live.
+        let cancel = ctx.cancel.clone();
+        let path_cpu = path.clone();
+        let original = content.clone();
+        let applied = match tokio::task::spawn_blocking(move || {
+            apply_hunks_cpu(&path_cpu, content, hunks, &cancel)
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return err(e),
+            Err(e) => {
+                return err(format!("edit_file: apply task failed: {e}"));
+            }
         };
-
-        let mut buf = content.clone();
-        let mut total = 0usize;
-        let mut kinds: Vec<&str> = Vec::new();
-        let mut auto_healed_old_strings: Vec<String> = Vec::new();
-        let mut skipped: Vec<String> = Vec::new();
-        for (i, h) in hunks.iter().enumerate() {
-            if !h.old_string.is_empty() && h.old_string == h.new_string {
-                skipped.push(format!("{} (identical old/new)", i + 1));
-                kinds.push("skipped-identical");
-                continue;
-            }
-            match apply_hunk(
-                &buf,
-                &h.old_string,
-                &h.new_string,
-                h.replace_all,
-                h.occurrence,
-            ) {
-                Ok((next, n, kind, actual_matched)) => {
-                    buf = next;
-                    total += n;
-                    kinds.push(kind);
-                    if let Some(actual) = actual_matched {
-                        auto_healed_old_strings.push(actual);
-                    }
-                }
-                Err(e) => {
-                    // Try 3-Way Historical Rebase if failed on current buffer
-                    if let Some(rebased) = crate::tools::edit_history::try_history_rebase(
-                        &path,
-                        &buf,
-                        &h.old_string,
-                        &h.new_string,
-                        h.replace_all,
-                    ) {
-                        buf = rebased.merged_content;
-                        total += 1;
-                        kinds.push("historical 3-way rebase");
-                        if !rebased.actual_old_string.is_empty() {
-                            auto_healed_old_strings.push(rebased.actual_old_string);
-                        }
-                    } else {
-                        return err(format!(
-                            "edit_file: hunk {}/{} failed. The file was NOT modified. {e}",
-                            i + 1,
-                            hunks.len()
-                        ));
-                    }
-                }
-            }
-        }
-        if total == 0 && buf == content {
+        let HunkApplyResult {
+            buf,
+            total,
+            kinds,
+            auto_healed_old_strings,
+            skipped,
+        } = applied;
+        if total == 0 && buf == original {
             let skip_note = if skipped.is_empty() {
                 String::new()
             } else {
@@ -246,7 +220,7 @@ impl Tool for EditFileTool {
         crate::tools::write_state::record_edit(&path);
         #[cfg(feature = "codeintel")]
         crate::codeintel::notify_code_index_file_changed(&path, Some(&buf));
-        let diff = build_compact_diff(&content, &buf);
+        let diff = build_compact_diff(&original, &buf);
         let cost_time = t0.elapsed();
         let kind_note = if kinds.len() == 1 {
             if kinds[0] == "exact" {
@@ -281,6 +255,97 @@ impl Tool for EditFileTool {
         ));
         return ok(out);
     }
+}
+
+struct HunkApplyResult {
+    buf: String,
+    total: usize,
+    kinds: Vec<&'static str>,
+    auto_healed_old_strings: Vec<String>,
+    skipped: Vec<String>,
+}
+
+/// Sync heal / diagnose / rebase. Runs on `spawn_blocking` so it cannot pin the
+/// async worker. Polls `cancel` between hunks and between history snapshots.
+fn apply_hunks_cpu(
+    path: &std::path::Path,
+    content: String,
+    hunks: Vec<EditHunk>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<HunkApplyResult, String> {
+    if cancel.is_cancelled() {
+        return Err("edit_file: cancelled.".into());
+    }
+    crate::tools::edit_history::record_version(path, &content);
+    let hunks = if hunks.len() > 1 {
+        sort_hunks_topologically(&content, &hunks)
+    } else {
+        hunks
+    };
+
+    let mut buf = content.clone();
+    let mut total = 0usize;
+    let mut kinds: Vec<&'static str> = Vec::new();
+    let mut auto_healed_old_strings: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for (i, h) in hunks.iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err("edit_file: cancelled.".into());
+        }
+        if !h.old_string.is_empty() && h.old_string == h.new_string {
+            skipped.push(format!("{} (identical old/new)", i + 1));
+            kinds.push("skipped-identical");
+            continue;
+        }
+        match apply_hunk(
+            &buf,
+            &h.old_string,
+            &h.new_string,
+            h.replace_all,
+            h.occurrence,
+        ) {
+            Ok((next, n, kind, actual_matched)) => {
+                buf = next;
+                total += n;
+                kinds.push(kind);
+                if let Some(actual) = actual_matched {
+                    auto_healed_old_strings.push(actual);
+                }
+            }
+            Err(e) => {
+                if let Some(rebased) = crate::tools::edit_history::try_history_rebase_cancel(
+                    path,
+                    &buf,
+                    &h.old_string,
+                    &h.new_string,
+                    h.replace_all,
+                    Some(cancel),
+                ) {
+                    buf = rebased.merged_content;
+                    total += 1;
+                    kinds.push("historical 3-way rebase");
+                    if !rebased.actual_old_string.is_empty() {
+                        auto_healed_old_strings.push(rebased.actual_old_string);
+                    }
+                } else if cancel.is_cancelled() {
+                    return Err("edit_file: cancelled.".into());
+                } else {
+                    return Err(format!(
+                        "edit_file: hunk {}/{} failed. The file was NOT modified. {e}",
+                        i + 1,
+                        hunks.len()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(HunkApplyResult {
+        buf,
+        total,
+        kinds,
+        auto_healed_old_strings,
+        skipped,
+    })
 }
 
 fn deserialize_lenient_string<'de, D>(d: D) -> Result<String, D::Error>
@@ -418,19 +483,48 @@ fn apply_hunk(
     replace_all: bool,
     occurrence: u32,
 ) -> Result<(String, usize, &'static str, Option<String>), String> {
-    if !old_string.is_empty() {
-        return apply_text_hunk(content, old_string, new_string, replace_all, occurrence);
-    }
-    Err("edit_file: provide a non-empty `old_string` in each edit hunk.".into())
+    // User-facing path: heal, then diagnose at most once on the current file.
+    apply_hunk_with(
+        content,
+        old_string,
+        new_string,
+        replace_all,
+        occurrence,
+        true,
+    )
 }
 
+/// History-rebase probing path. Runs the same healing cascade as [`apply_hunk`]
+/// but NEVER builds a closest-match diagnostic. Diagnosing on every historical
+/// snapshot is what turned a missed 200-line hunk into a multi-minute hang.
 pub(crate) fn apply_hunk_direct(
     content: &str,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
 ) -> Result<(String, usize, &'static str, Option<String>), String> {
-    apply_hunk(content, old_string, new_string, replace_all, 0)
+    apply_hunk_with(content, old_string, new_string, replace_all, 0, false)
+}
+
+fn apply_hunk_with(
+    content: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+    occurrence: u32,
+    diagnose: bool,
+) -> Result<(String, usize, &'static str, Option<String>), String> {
+    if !old_string.is_empty() {
+        return apply_text_hunk(
+            content,
+            old_string,
+            new_string,
+            replace_all,
+            occurrence,
+            diagnose,
+        );
+    }
+    Err("edit_file: provide a non-empty `old_string` in each edit hunk.".into())
 }
 
 /// Topologically sorts multiple edit hunks within a file:
@@ -590,33 +684,42 @@ fn locate_hunk_lines(content_lines: &[&str], old_string: &str) -> Option<(usize,
     if old_lines.is_empty() {
         return None;
     }
-
-    // 1. Exact lines match
-    let mut matches = Vec::new();
     let n = old_lines.len();
-    for i in 0..=content_lines.len().saturating_sub(n) {
+    if n > content_lines.len() {
+        return None;
+    }
+
+    // 1. Exact lines match (slice compare, no per-window allocation).
+    let mut matches = Vec::new();
+    for i in 0..=content_lines.len() - n {
         if content_lines[i..i + n] == old_lines[..] {
             matches.push((i, i + n));
+            if matches.len() > 1 {
+                break;
+            }
         }
     }
     if matches.len() == 1 {
         return Some(matches[0]);
     }
 
-    // 2. Line-trimmed match
+    // 2. Line-trimmed match. Precompute once; compare slices.
     let old_trimmed: Vec<&str> = old_lines.iter().map(|l| l.trim()).collect();
+    let content_trimmed: Vec<&str> = content_lines.iter().map(|l| l.trim()).collect();
     let mut trimmed_matches = Vec::new();
-    for i in 0..=content_lines.len().saturating_sub(n) {
-        let window: Vec<&str> = content_lines[i..i + n].iter().map(|l| l.trim()).collect();
-        if window == old_trimmed {
+    for i in 0..=content_trimmed.len() - n {
+        if content_trimmed[i..i + n] == old_trimmed[..] {
             trimmed_matches.push((i, i + n));
+            if trimmed_matches.len() > 1 {
+                return None;
+            }
         }
     }
     if trimmed_matches.len() == 1 {
-        return Some(trimmed_matches[0]);
+        Some(trimmed_matches[0])
+    } else {
+        None
     }
-
-    None
 }
 
 /// If a model accidentally copies lines from `read_file` with the `LINE_NUMBER→` prefix,
@@ -655,6 +758,7 @@ fn apply_text_hunk(
     new_string: &str,
     replace_all: bool,
     occurrence: u32,
+    diagnose: bool,
 ) -> Result<(String, usize, &'static str, Option<String>), String> {
     if old_string == new_string {
         return Err("old_string and new_string are identical — nothing to change.".into());
@@ -678,15 +782,26 @@ fn apply_text_hunk(
         if let Some(clean_old) = strip_line_prefix_hints(old_string) {
             let clean_new =
                 strip_line_prefix_hints(new_string).unwrap_or_else(|| new_string.to_string());
-            if let Ok(res) =
-                apply_text_hunk(content, &clean_old, &clean_new, replace_all, occurrence)
-            {
+            // Nested heal only — never diagnose here. A prefix-stripped miss would
+            // otherwise run the closest-match scan twice (inner + outer).
+            if let Ok(res) = apply_text_hunk(
+                content,
+                &clean_old,
+                &clean_new,
+                replace_all,
+                occurrence,
+                false,
+            ) {
                 let actual = res.3.unwrap_or(clean_old);
                 return Ok((res.0, res.1, "stripped-arrow prefix match", Some(actual)));
             }
         }
+        // One normalized view shared by every healer. Building this per matcher
+        // used to re-tokenize the whole file 5× on every miss (and × history depth
+        // on rebase probing).
+        let file = NormalizedFile::new(content);
         if let Some((fuzzy_result, fuzzy_count, actual)) =
-            try_fuzzy_replace(content, old_string, new_string, replace_all)
+            try_fuzzy_replace(&file, old_string, new_string, replace_all)
         {
             if fuzzy_result != content {
                 return Ok((
@@ -698,7 +813,7 @@ fn apply_text_hunk(
             }
         }
         if let Some((token_result, token_count, actual)) =
-            try_token_normalized_replace(content, old_string, new_string, replace_all)
+            try_token_normalized_replace(&file, old_string, new_string, replace_all)
         {
             if token_result != content {
                 return Ok((
@@ -710,7 +825,7 @@ fn apply_text_hunk(
             }
         }
         if let Some((comment_result, comment_count, actual)) =
-            try_comment_style_replace(content, old_string, new_string, replace_all)
+            try_comment_style_replace(&file, old_string, new_string, replace_all)
         {
             if comment_result != content {
                 return Ok((
@@ -722,21 +837,24 @@ fn apply_text_hunk(
             }
         }
         if let Some((anchor_result, _, actual)) =
-            try_block_anchor_replace(content, old_string, new_string)
+            try_block_anchor_replace(&file, old_string, new_string)
         {
             if anchor_result != content {
                 return Ok((anchor_result, 1, "anchored block match", Some(actual)));
             }
         }
         if let Some((bound_result, _, actual)) =
-            try_trimmed_boundary_replace(content, old_string, new_string)
+            try_trimmed_boundary_replace(&file, old_string, new_string)
         {
             if bound_result != content {
                 return Ok((bound_result, 1, "trimmed boundary match", Some(actual)));
             }
         }
-        let hint = find_closest_match_snippet(content, old_string).unwrap_or_default();
-        return Err(format!("old_string not found in file.\n{hint}"));
+        if diagnose {
+            let hint = find_closest_match_snippet(&file, old_string).unwrap_or_default();
+            return Err(format!("old_string not found in file.\n{hint}"));
+        }
+        return Err("old_string not found in file.".into());
     }
     if count > 1 && !replace_all {
         if occurrence >= 1 {
@@ -925,6 +1043,78 @@ fn reanchored_replacement(new_lines: &[&str], original_line: &str) -> Vec<String
         .collect()
 }
 
+/// Precomputed line views shared by every healer and the (optional) diagnostic.
+/// Tokenizing a 3k-line file once is cheap; doing it inside every sliding window is not.
+struct NormalizedFile<'a> {
+    lines: Vec<&'a str>,
+    trimmed: Vec<&'a str>,
+    tokens: Vec<String>,
+    has_crlf: bool,
+    trailing_newline: bool,
+}
+
+impl<'a> NormalizedFile<'a> {
+    fn new(raw: &'a str) -> Self {
+        let lines: Vec<&str> = raw.lines().collect();
+        let trimmed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+        let tokens: Vec<String> = lines.iter().map(|l| clean_token_normalize(l)).collect();
+        Self {
+            has_crlf: raw.contains("\r\n"),
+            trailing_newline: raw.ends_with('\n'),
+            lines,
+            trimmed,
+            tokens,
+        }
+    }
+}
+
+fn join_normalized(file: &NormalizedFile<'_>, result_lines: Vec<String>) -> String {
+    let mut result = result_lines.join("\n");
+    if file.trailing_newline && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    if file.has_crlf {
+        result = coerce_eol(&result, "\r\n");
+    }
+    result
+}
+
+fn splice_normalized_windows(
+    file: &NormalizedFile<'_>,
+    matches: &[(usize, usize)],
+    replace_all: bool,
+    new_string: &str,
+) -> (String, usize, String) {
+    let to_replace = if replace_all { matches } else { &matches[..1] };
+    let actual = file.lines[to_replace[0].0..to_replace[0].1].join("\n");
+    let new_lines: Vec<&str> = new_string.lines().collect();
+    let mut result_lines: Vec<String> = file.lines.iter().map(|l| (*l).to_string()).collect();
+    for &(start, end) in to_replace.iter().rev() {
+        let replacement = reanchored_replacement(&new_lines, file.lines[start]);
+        result_lines.splice(start..end, replacement);
+    }
+    let count = if replace_all { matches.len() } else { 1 };
+    (join_normalized(file, result_lines), count, actual)
+}
+
+fn find_exact_windows(hay: &[&str], needle: &[&str]) -> Vec<(usize, usize)> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return Vec::new();
+    }
+    let n = needle.len();
+    let mut matches = Vec::new();
+    let mut i = 0;
+    while i + n <= hay.len() {
+        if hay[i..i + n] == needle[..] {
+            matches.push((i, i + n));
+            i += n;
+        } else {
+            i += 1;
+        }
+    }
+    matches
+}
+
 /// Whitespace-normalized fuzzy replace (faithful port of the v1 editor's
 /// `try_fuzzy_replace`). Matches `old_string` against `content` line-by-line with each
 /// line `.trim()`-ed, so a model that reproduced indentation with the wrong whitespace
@@ -937,14 +1127,12 @@ fn reanchored_replacement(new_lines: &[&str], original_line: &str) -> Vec<String
 /// string is empty, its trimmed content totals < 10 chars (too short to match safely),
 /// no window matches, or `!replace_all` but more than one window matches (ambiguous).
 fn try_fuzzy_replace(
-    content: &str,
+    file: &NormalizedFile<'_>,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
 ) -> Option<(String, usize, String)> {
-    // 1. Exact match (with optional leading/trailing blank line trimming)
     let old_normalized: Vec<&str> = old_string.lines().map(|l| l.trim()).collect();
-    // Strip leading/trailing empty lines from the old_string pattern if they don't match the file boundary
     let old_trimmed_core: Vec<&str> = {
         let start = old_normalized
             .iter()
@@ -965,83 +1153,27 @@ fn try_fuzzy_replace(
         return None;
     }
 
-    let content_lines: Vec<&str> = content.lines().collect();
-    let has_trailing_newline = content.ends_with('\n');
-    let mut matches: Vec<(usize, usize)> = Vec::new();
-
-    // Only attempt a fuzzy match if old_string has substantial content (guards against
-    // a short fragment matching the wrong place after trimming).
     let total_non_ws: usize = old_trimmed_core.iter().map(|l| l.len()).sum();
     if total_non_ws < 4 {
         return None;
     }
 
-    // Pass 1: match exact old_normalized
-    let mut i = 0;
-    while i + old_normalized.len() <= content_lines.len() {
-        let window: Vec<&str> = content_lines[i..i + old_normalized.len()]
-            .iter()
-            .map(|l| l.trim())
-            .collect();
-        if window == old_normalized {
-            matches.push((i, i + old_normalized.len()));
-            i += old_normalized.len();
-        } else {
-            i += 1;
-        }
-    }
-
-    // Pass 2: If no matches, try matching with trimmed core (handles accidental leading/trailing blank lines emitted by LLM)
+    let mut matches = find_exact_windows(&file.trimmed, &old_normalized);
     if matches.is_empty() && old_trimmed_core.len() != old_normalized.len() {
-        let mut i = 0;
-        while i + old_trimmed_core.len() <= content_lines.len() {
-            let window: Vec<&str> = content_lines[i..i + old_trimmed_core.len()]
-                .iter()
-                .map(|l| l.trim())
-                .collect();
-            if window == old_trimmed_core {
-                matches.push((i, i + old_trimmed_core.len()));
-                i += old_trimmed_core.len();
-            } else {
-                i += 1;
-            }
-        }
+        matches = find_exact_windows(&file.trimmed, &old_trimmed_core);
     }
-
     if matches.is_empty() {
         return None;
     }
-    // Unique unless replace_all
     if !replace_all && matches.len() > 1 {
         return None;
     }
-
-    // Re-anchor the replacement to each match's REAL indentation (see `reanchored_replacement`).
-    let new_lines: Vec<&str> = new_string.lines().collect();
-    let mut result_lines: Vec<String> = content_lines.iter().map(|l| l.to_string()).collect();
-    let to_replace = if replace_all {
-        &matches[..]
-    } else {
-        &matches[..1]
-    };
-    let actual = content_lines[to_replace[0].0..to_replace[0].1].join("\n");
-    for &(start, end) in to_replace.iter().rev() {
-        let replacement = reanchored_replacement(&new_lines, content_lines[start]);
-        result_lines.splice(start..end, replacement);
-    }
-
-    let mut result = result_lines.join("\n");
-    if has_trailing_newline && !result.ends_with('\n') {
-        result.push('\n');
-    }
-    // `lines()` stripped every `\r`, so a CRLF file would otherwise be rewritten to LF
-    // across the WHOLE file (incl. untouched lines) — a silent whole-file EOL downgrade.
-    // Restore the file's convention, mirroring the exact-match path's EOL preservation.
-    if content.contains("\r\n") {
-        result = coerce_eol(&result, "\r\n");
-    }
-    let count = if replace_all { matches.len() } else { 1 };
-    Some((result, count, actual))
+    Some(splice_normalized_windows(
+        file,
+        &matches,
+        replace_all,
+        new_string,
+    ))
 }
 
 /// BLOCK-ANCHOR fuzzy replace — the tier below [`try_fuzzy_replace`]. When the model
@@ -1060,7 +1192,7 @@ fn try_fuzzy_replace(
 /// window must be UNIQUE (no `replace_all` at this tier — guessing which of several to
 /// rewrite is unsafe). Returns `None` on any miss so the caller falls back to not-found.
 fn try_block_anchor_replace(
-    content: &str,
+    file: &NormalizedFile<'_>,
     old_string: &str,
     new_string: &str,
 ) -> Option<(String, usize, String)> {
@@ -1084,57 +1216,73 @@ fn try_block_anchor_replace(
     if n < 3 {
         return None;
     }
-    let first_norm = clean_token_normalize(old_lines[0]);
-    let last_norm = clean_token_normalize(old_lines[n - 1]);
+    let old_tokens: Vec<String> = old_lines.iter().map(|l| clean_token_normalize(l)).collect();
+    let first_norm = &old_tokens[0];
+    let last_norm = &old_tokens[n - 1];
     if first_norm.chars().count() < 2 || last_norm.chars().count() < 2 {
         return None;
     }
+    if n > file.tokens.len() {
+        return None;
+    }
 
-    let content_lines: Vec<&str> = content.lines().collect();
-    let has_trailing_newline = content.ends_with('\n');
-    let mut matches: Vec<usize> = Vec::new();
-    let mut i = 0;
-    while i + n <= content_lines.len() {
-        let f_c = clean_token_normalize(content_lines[i]);
-        let l_c = clean_token_normalize(content_lines[i + n - 1]);
-        if f_c == first_norm && l_c == last_norm {
-            let matched = (0..n)
-                .filter(|&k| {
-                    let a = clean_token_normalize(content_lines[i + k]);
-                    let b = clean_token_normalize(old_lines[k]);
-                    a == b || strsim::normalized_levenshtein(&a, &b) >= 0.75
-                })
-                .count();
-            let threshold = if n <= 4 {
-                n.saturating_sub(1)
-            } else {
-                (n as f32 * 0.65).ceil() as usize
-            };
-            if matched >= threshold {
-                matches.push(i);
+    // First+last gates. A common pair (`</div>` … `}`) on a 3k-line React file
+    // would otherwise score hundreds of 200-line windows with per-line Levenshtein.
+    // Unique-match is required anyway, so a flood of candidates cannot succeed.
+    const MAX_ANCHOR_CANDIDATES: usize = 48;
+    let mut candidates = Vec::new();
+    let last = file.tokens.len() - n;
+    for i in 0..=last {
+        if file.tokens[i] == *first_norm && file.tokens[i + n - 1] == *last_norm {
+            candidates.push(i);
+            if candidates.len() > MAX_ANCHOR_CANDIDATES {
+                return None;
             }
         }
-        i += 1;
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let threshold = if n <= 4 {
+        n.saturating_sub(1)
+    } else {
+        (n as f32 * 0.65).ceil() as usize
+    };
+    let mut matches: Vec<usize> = Vec::new();
+    for i in candidates {
+        let matched = (0..n)
+            .filter(|&k| {
+                let a = &file.tokens[i + k];
+                let b = &old_tokens[k];
+                if a == b {
+                    return true;
+                }
+                // Bound DP: a minified / data-URL line must not run L² on 10k chars.
+                if a.len() > 256 || b.len() > 256 {
+                    return false;
+                }
+                strsim::normalized_levenshtein(a, b) >= 0.75
+            })
+            .count();
+        if matched >= threshold {
+            matches.push(i);
+            if matches.len() > 1 {
+                return None;
+            }
+        }
     }
     if matches.len() != 1 {
         return None;
     }
 
     let start = matches[0];
-    let actual = content_lines[start..start + n].join("\n");
-    let new_lines: Vec<&str> = new_string.lines().collect();
-    let replacement = reanchored_replacement(&new_lines, content_lines[start]);
-    let mut result_lines: Vec<String> = content_lines.iter().map(|l| l.to_string()).collect();
-    result_lines.splice(start..start + n, replacement);
-
-    let mut result = result_lines.join("\n");
-    if has_trailing_newline && !result.ends_with('\n') {
-        result.push('\n');
-    }
-    if content.contains("\r\n") {
-        result = coerce_eol(&result, "\r\n");
-    }
-    Some((result, 1, actual))
+    Some(splice_normalized_windows(
+        file,
+        &[(start, start + n)],
+        false,
+        new_string,
+    ))
 }
 
 /// Filter invisible Unicode characters, normalize smart quotes/punctuation, and collapse whitespace.
@@ -1177,7 +1325,7 @@ fn clean_token_normalize(s: &str) -> String {
 /// Token & inline-whitespace normalized fallback: matches line-by-line after collapsing internal spaces,
 /// stripping zero-width characters, and normalizing unicode quotes/punctuation.
 fn try_token_normalized_replace(
-    content: &str,
+    file: &NormalizedFile<'_>,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
@@ -1196,22 +1344,15 @@ fn try_token_normalized_replace(
         return None;
     }
 
-    let content_lines: Vec<&str> = content.lines().collect();
-    let content_normalized: Vec<String> = content_lines
-        .iter()
-        .map(|l| clean_token_normalize(l))
-        .collect();
-
     let n = old_normalized.len();
-    if n == 0 || n > content_normalized.len() {
+    if n > file.tokens.len() {
         return None;
     }
 
     let mut matches: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
-    while i + n <= content_normalized.len() {
-        let window = &content_normalized[i..i + n];
-        if window == old_normalized.as_slice() {
+    while i + n <= file.tokens.len() {
+        if file.tokens[i..i + n] == old_normalized[..] {
             matches.push((i, i + n));
             i += n;
         } else {
@@ -1225,35 +1366,17 @@ fn try_token_normalized_replace(
     if !replace_all && matches.len() > 1 {
         return None;
     }
-
-    let has_trailing_newline = content.ends_with('\n');
-    let new_lines: Vec<&str> = new_string.lines().collect();
-    let mut result_lines: Vec<String> = content_lines.iter().map(|l| l.to_string()).collect();
-    let to_replace = if replace_all {
-        &matches[..]
-    } else {
-        &matches[..1]
-    };
-    let actual = content_lines[to_replace[0].0..to_replace[0].1].join("\n");
-    for &(start, end) in to_replace.iter().rev() {
-        let replacement = reanchored_replacement(&new_lines, content_lines[start]);
-        result_lines.splice(start..end, replacement);
-    }
-
-    let mut result = result_lines.join("\n");
-    if has_trailing_newline && !result.ends_with('\n') {
-        result.push('\n');
-    }
-    if content.contains("\r\n") {
-        result = coerce_eol(&result, "\r\n");
-    }
-    let count = if replace_all { matches.len() } else { 1 };
-    Some((result, count, actual))
+    Some(splice_normalized_windows(
+        file,
+        &matches,
+        replace_all,
+        new_string,
+    ))
 }
 
 /// Boundary trimmed context match: when LLM emitted extra leading or trailing context lines.
 fn try_trimmed_boundary_replace(
-    content: &str,
+    file: &NormalizedFile<'_>,
     old_string: &str,
     new_string: &str,
 ) -> Option<(String, usize, String)> {
@@ -1266,10 +1389,10 @@ fn try_trimmed_boundary_replace(
     if clean_token_normalize(old_lines[0]) == clean_token_normalize(new_lines[0]) {
         let sub_old = old_lines[1..].join("\n");
         let sub_new = new_lines[1..].join("\n");
-        if let Some(res) = try_fuzzy_replace(content, &sub_old, &sub_new, false) {
+        if let Some(res) = try_fuzzy_replace(file, &sub_old, &sub_new, false) {
             return Some(res);
         }
-        if let Some(res) = try_token_normalized_replace(content, &sub_old, &sub_new, false) {
+        if let Some(res) = try_token_normalized_replace(file, &sub_old, &sub_new, false) {
             return Some(res);
         }
     }
@@ -1278,10 +1401,10 @@ fn try_trimmed_boundary_replace(
         if clean_token_normalize(last_o) == clean_token_normalize(last_n) {
             let sub_old = old_lines[..old_lines.len() - 1].join("\n");
             let sub_new = new_lines[..new_lines.len() - 1].join("\n");
-            if let Some(res) = try_fuzzy_replace(content, &sub_old, &sub_new, false) {
+            if let Some(res) = try_fuzzy_replace(file, &sub_old, &sub_new, false) {
                 return Some(res);
             }
-            if let Some(res) = try_token_normalized_replace(content, &sub_old, &sub_new, false) {
+            if let Some(res) = try_token_normalized_replace(file, &sub_old, &sub_new, false) {
                 return Some(res);
             }
         }
@@ -1416,7 +1539,7 @@ fn collapse_comment_style_spans(lines: &[&str]) -> Vec<(String, usize, usize)> {
 /// annotations or unrelated identifiers — a model that tried to replace
 /// `createTime` with a different field must still fail.
 fn try_comment_style_replace(
-    content: &str,
+    file: &NormalizedFile<'_>,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
@@ -1431,8 +1554,7 @@ fn try_comment_style_replace(
         return None;
     }
 
-    let content_lines: Vec<&str> = content.lines().collect();
-    let content_spans = collapse_comment_style_spans(&content_lines);
+    let content_spans = collapse_comment_style_spans(&file.lines);
     if content_spans.len() < old_collapsed.len() {
         return None;
     }
@@ -1441,8 +1563,11 @@ fn try_comment_style_replace(
     let mut matches: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while i + n <= content_spans.len() {
-        let window: Vec<&String> = content_spans[i..i + n].iter().map(|(s, _, _)| s).collect();
-        if window.iter().copied().eq(old_collapsed.iter()) {
+        let same = content_spans[i..i + n]
+            .iter()
+            .map(|(s, _, _)| s.as_str())
+            .eq(old_collapsed.iter().map(|s| s.as_str()));
+        if same {
             let start_line = content_spans[i].1;
             let end_line = content_spans[i + n - 1].2;
             matches.push((start_line, end_line));
@@ -1454,87 +1579,205 @@ fn try_comment_style_replace(
     if matches.is_empty() || (!replace_all && matches.len() > 1) {
         return None;
     }
-
-    let has_trailing_newline = content.ends_with('\n');
-    let new_lines: Vec<&str> = new_string.lines().collect();
-    let mut result_lines: Vec<String> = content_lines.iter().map(|l| l.to_string()).collect();
-    let to_replace = if replace_all {
-        &matches[..]
-    } else {
-        &matches[..1]
-    };
-    let actual = content_lines[to_replace[0].0..to_replace[0].1].join("\n");
-    for &(start, end) in to_replace.iter().rev() {
-        let replacement = reanchored_replacement(&new_lines, content_lines[start]);
-        result_lines.splice(start..end, replacement);
-    }
-
-    let mut result = result_lines.join("\n");
-    if has_trailing_newline && !result.ends_with('\n') {
-        result.push('\n');
-    }
-    if content.contains("\r\n") {
-        result = coerce_eol(&result, "\r\n");
-    }
-    let count = if replace_all { matches.len() } else { 1 };
-    Some((result, count, actual))
+    Some(splice_normalized_windows(
+        file,
+        &matches,
+        replace_all,
+        new_string,
+    ))
 }
 
-/// Computes the closest snippet in `content` to `old_string` using normalized Levenshtein similarity.
-fn find_closest_match_snippet(content: &str, old_string: &str) -> Option<String> {
-    let old_lines: Vec<&str> = old_string.lines().collect();
-    let old_core: String = old_lines
-        .iter()
-        .map(|l| clean_token_normalize(l))
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if old_core.is_empty() {
-        return None;
+const MISMATCH_GREP_HINT: &str = "[Content Mismatch]: Target old_string could not be located in the file. Please use grep to locate the target symbol or read a narrow window with read_file.";
+
+/// Line-level similarity with a hard cap so a minified / data-URL line cannot
+/// run character Levenshtein on tens of thousands of chars.
+fn line_similarity(a: &str, b: &str) -> f32 {
+    if a == b {
+        return 1.0;
     }
-    let content_lines: Vec<&str> = content.lines().collect();
-    let n = old_lines.len().max(1);
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    if a.len() > 256 || b.len() > 256 {
+        return 0.0;
+    }
+    strsim::normalized_levenshtein(a, b) as f32
+}
 
-    let mut best_score = 0.0f32;
-    let mut best_range = (0, 0);
+/// Rolling multiset intersection of `old_tokens` against every window of
+/// `window_lines` file tokens. O(file lines) — no character DP.
+fn best_window_by_token_bag(
+    file: &NormalizedFile<'_>,
+    old_tokens: &[String],
+    window_lines: usize,
+) -> (usize, usize, f32) {
+    use std::collections::HashMap;
+    let m = file.tokens.len();
+    if m == 0 || old_tokens.is_empty() {
+        return (0, 0, 0.0);
+    }
+    let w = window_lines.max(1).min(m);
+    let need = old_tokens.len() as f32;
 
-    for i in 0..content_lines.len() {
-        let end = (i + n).min(content_lines.len());
-        let window: String = content_lines[i..end]
-            .iter()
-            .map(|l| clean_token_normalize(l))
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let sim = strsim::normalized_levenshtein(&old_core, &window) as f32;
-        if sim > best_score {
-            best_score = sim;
-            best_range = (i, end);
+    let mut old_freq: HashMap<&str, i32> = HashMap::new();
+    for t in old_tokens {
+        *old_freq.entry(t.as_str()).or_insert(0) += 1;
+    }
+
+    let mut win_freq: HashMap<&str, i32> = HashMap::new();
+    let mut hits: i32 = 0;
+    for tok in file.tokens.iter().take(w) {
+        let t = tok.as_str();
+        if t.is_empty() {
+            continue;
+        }
+        let c = win_freq.entry(t).or_insert(0);
+        *c += 1;
+        if *c <= old_freq.get(t).copied().unwrap_or(0) {
+            hits += 1;
+        }
+    }
+    let mut best_hits = hits;
+    let mut best_i = 0usize;
+
+    for start in 1..=m.saturating_sub(w) {
+        let drop = file.tokens[start - 1].as_str();
+        if !drop.is_empty() {
+            if let Some(c) = win_freq.get_mut(drop) {
+                if *c <= old_freq.get(drop).copied().unwrap_or(0) {
+                    hits -= 1;
+                }
+                *c -= 1;
+            }
+        }
+        let add = file.tokens[start + w - 1].as_str();
+        if !add.is_empty() {
+            let c = win_freq.entry(add).or_insert(0);
+            *c += 1;
+            if *c <= old_freq.get(add).copied().unwrap_or(0) {
+                hits += 1;
+            }
+        }
+        if hits > best_hits {
+            best_hits = hits;
+            best_i = start;
         }
     }
 
-    if best_score >= 0.30 {
-        let (start, end) = best_range;
-        let actual_block = content_lines[start..end].join("\n");
-        let mut config = similar::TextDiff::configure();
-        config.timeout(std::time::Duration::from_millis(200));
-        let diff = config
-            .diff_lines(old_string, &actual_block)
-            .unified_diff()
-            .header("expected (your old_string)", "actual (in file)")
-            .context_radius(2)
-            .to_string();
-        let diff = diff.trim_end();
-        Some(format!(
-            "[Content Mismatch]: Closest matching block found around lines {}-{} (similarity {:.0}%):\n```diff\n{}\n```\n(Hint: adjust your old_string to match the actual file content above; do not blindly re-read the whole file)",
-            start + 1,
-            end,
-            best_score * 100.0,
-            diff
-        ))
+    let end = (best_i + w).min(m);
+    let score = if need > 0.0 {
+        best_hits.max(0) as f32 / need
     } else {
-        Some("[Content Mismatch]: Target old_string could not be located in the file. Please use grep to locate the target symbol or read a narrow window with read_file.".to_string())
+        0.0
+    };
+    (best_i, end, score)
+}
+
+/// Tiny-hunk fallback: mean per-line similarity. n is capped by the caller (≤ 8).
+fn best_window_by_line_similarity(
+    file: &NormalizedFile<'_>,
+    old_tokens: &[String],
+) -> (usize, usize, f32) {
+    let n = old_tokens.len().max(1);
+    let m = file.tokens.len();
+    if m == 0 {
+        return (0, 0, 0.0);
     }
+    let mut best = 0.0f32;
+    let mut best_i = 0usize;
+    for i in 0..m {
+        let end = (i + n).min(m);
+        let span = end - i;
+        if span == 0 {
+            continue;
+        }
+        let mut sum = 0.0f32;
+        for k in 0..span {
+            let a = old_tokens.get(k).map(|s| s.as_str()).unwrap_or("");
+            let b = file.tokens[i + k].as_str();
+            sum += line_similarity(a, b);
+        }
+        let sim = sum / n as f32;
+        if sim > best {
+            best = sim;
+            best_i = i;
+            if best >= 0.999 {
+                break;
+            }
+        }
+    }
+    (best_i, (best_i + n).min(m), best)
+}
+
+fn bounded_mismatch_diff(old_string: &str, actual_block: &str) -> String {
+    let mut config = similar::TextDiff::configure();
+    config.timeout(std::time::Duration::from_millis(200));
+    let full = config
+        .diff_lines(old_string, actual_block)
+        .unified_diff()
+        .header("expected (your old_string)", "actual (in file)")
+        .context_radius(2)
+        .to_string();
+    const MAX_DIFF_LINES: usize = 80;
+    let full = full.trim_end();
+    let lines: Vec<&str> = full.lines().collect();
+    if lines.len() <= MAX_DIFF_LINES {
+        return full.to_string();
+    }
+    let mut out = lines[..MAX_DIFF_LINES].join("\n");
+    out.push_str(&format!(
+        "\n… ({} more diff lines)",
+        lines.len() - MAX_DIFF_LINES
+    ));
+    out
+}
+
+/// Diagnostic-only closest-region locator. Never used by the healing cascade or
+/// 3-way history rebase.
+///
+/// Previous implementation slid a character-level Levenshtein across every file
+/// line (`O(file_lines × |old| × |window|)`). A 280-line hunk against a 3.5k-line
+/// file is ~5×10^11 DP cells. This version:
+/// 1. scores every window with a rolling token-bag (O(file lines));
+/// 2. refines only tiny hunks (≤ 8 non-empty lines) with per-line similarity;
+/// 3. emits one bounded `similar` TextDiff of the winning window.
+fn find_closest_match_snippet(file: &NormalizedFile<'_>, old_string: &str) -> Option<String> {
+    let old_lines: Vec<&str> = old_string.lines().collect();
+    let old_tokens: Vec<String> = old_lines
+        .iter()
+        .map(|l| clean_token_normalize(l))
+        .filter(|l| !l.is_empty())
+        .collect();
+    if old_tokens.is_empty() {
+        return Some(MISMATCH_GREP_HINT.to_string());
+    }
+
+    let window_n = old_lines.len().max(1);
+    let (mut start, mut end, mut score) = best_window_by_token_bag(file, &old_tokens, window_n);
+
+    const SMALL_HUNK_LINES: usize = 8;
+    if old_tokens.len() <= SMALL_HUNK_LINES && score < 0.30 {
+        let refined = best_window_by_line_similarity(file, &old_tokens);
+        if refined.2 > score {
+            start = refined.0;
+            end = refined.1;
+            score = refined.2;
+        }
+    }
+
+    if score < 0.30 || end <= start {
+        return Some(MISMATCH_GREP_HINT.to_string());
+    }
+
+    let actual_block = file.lines[start..end].join("\n");
+    let diff = bounded_mismatch_diff(old_string, &actual_block);
+    Some(format!(
+        "[Content Mismatch]: Closest matching block found around lines {}-{} (similarity {:.0}%):\n```diff\n{}\n```\n(Hint: adjust your old_string to match the actual file content above; do not blindly re-read the whole file)",
+        start + 1,
+        end,
+        score * 100.0,
+        diff.trim_end()
+    ))
 }
 
 #[cfg(test)]
@@ -3072,6 +3315,101 @@ mod tests {
         assert_eq!(
             on_disk, "BBB_val = 20;\n",
             "Turn 1 content must not be overwritten or corrupted"
+        );
+    }
+
+    #[tokio::test]
+    async fn large_drifted_hunk_diagnoses_in_bounded_time() {
+        // Regression for the O(file_lines × |old| × |window|) Levenshtein diagnostic.
+        // A ~220-line drifted hunk against a ~3.2k-line file must fail fast AND still
+        // point at the planted region.
+        let d = tempfile::tempdir().unwrap();
+        let mut lines: Vec<String> = (0..3200)
+            .map(|i| format!("    const filler_{i} = {i};"))
+            .collect();
+        let plant_at = 1800usize;
+        let mut planted = vec!["    function RouterPanel() {".to_string()];
+        for i in 0..218 {
+            planted.push(format!("        <div className=\"row-{i}\">item-{i}</div>"));
+        }
+        planted.push("    }".to_string());
+        for (k, line) in planted.iter().enumerate() {
+            lines[plant_at + k] = line.clone();
+        }
+        let content = lines.join("\n") + "\n";
+        std::fs::write(d.path().join("ApiProxy.tsx"), &content).unwrap();
+
+        let mut old_lines = vec!["    function GhostPanel() {".to_string()];
+        for i in 0..218 {
+            if i == 49 {
+                old_lines.push(format!(
+                    "        <div className=\"row-{i}\">item-{i}-WRONG</div>"
+                ));
+            } else {
+                old_lines.push(format!("        <div className=\"row-{i}\">item-{i}</div>"));
+            }
+        }
+        old_lines.push("    } // end GhostPanel".to_string());
+        let old_str = old_lines.join("\n");
+        let new_str = "    function GhostPanel() {\n        return null;\n    }";
+
+        let t0 = std::time::Instant::now();
+        let r = EditFileTool
+            .execute(
+                &serde_json::json!({
+                    "file_path": "ApiProxy.tsx",
+                    "old_string": old_str,
+                    "new_string": new_str
+                })
+                .to_string(),
+                &ctx(d.path()),
+            )
+            .await;
+        let elapsed = t0.elapsed();
+        assert!(r.is_error, "expected a miss, got success: {}", r.content);
+        assert!(
+            elapsed < std::time::Duration::from_millis(1500),
+            "closest-match diagnostic hung: {elapsed:?}"
+        );
+        assert!(
+            r.content.contains("Closest matching block"),
+            "should still localize the planted region: {}",
+            r.content
+        );
+        assert!(
+            r.content.contains("RouterPanel"),
+            "diagnostic should point at the planted block: {}",
+            r.content
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("ApiProxy.tsx")).unwrap(),
+            content,
+            "miss must not mutate the file"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_token_aborts_without_writing() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.rs"), "fn a() { 1 }\n").unwrap();
+        let ctx = ctx(d.path());
+        ctx.cancel.cancel();
+        let r = EditFileTool
+            .execute(
+                r#"{"file_path":"a.rs","old_string":"fn a() { 1 }","new_string":"fn a() { 2 }"}"#,
+                &ctx,
+            )
+            .await;
+        assert!(r.is_error, "cancelled edit must error: {}", r.content);
+        assert!(
+            r.content.contains("cancel"),
+            "should mention cancellation: {}",
+            r.content
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("a.rs")).unwrap(),
+            "fn a() { 1 }\n",
+            "cancelled edit must not write"
         );
     }
 }

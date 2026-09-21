@@ -150,6 +150,14 @@ no_fold_tools = [               # 白名单工具列表：以下工具的输出�
      并附带当前位置最新的实际 `old_string` 文本与修改后的生效差异（Unified Diff），彻底避免模型因不确定性而陷入重复调用 `read_file` 的低效死循环。
 5. **失配局部 TextDiff 辅助定位**：
    - 当 `old_string` 完全无法匹配（相似度 $\ge 30\%$）时，自动生成期望与文件现状的紧凑 Unified Diff，指引模型直接校准 `old_string`，无需重新全盘通读源文件。
+6. **匹配 / 诊断 / 历史变基三路分层（性能不变量）**：
+   - 自愈链路（精确 / 模糊 / 锚点）与失败诊断、3-Way 历史变基探活严格分层：诊断只在**当前文件最终失败时运行一次**；`apply_hunk_direct` 探活永不生成 closest-match 诊断。
+   - 失配定位使用预计算行 token + 词袋滑动窗口（$O(\text{文件行数})$）；仅对 $\le 8$ 行的小 hunk 做行级相似度精修。禁止对整段 `old_string` 做逐行滑动的字符级 Levenshtein（否则 200+ 行 hunk × 数千行文件会膨胀到 $10^{11}$ 量级 DP 单元格，表现为超高延迟假死）。
+   - 块锚点（first/last）候选窗口有上限：首尾锚点过于普通（如 `</div>` … `}`）时直接放弃该档，避免对成百窗口做逐行编辑距离。
+7. **假死 / 事件循环死锁防护**：
+   - 自愈 + 诊断 + 3-Way rebase 全部在 `spawn_blocking` 上运行，禁止把 CPU 工作钉在 tokio worker 上（否则 Esc/Ctrl-C 的 `ctx.cancel` 无法被轮询，表现为整进程死锁）。
+   - hunk 之间与历史快照之间协作检查 `ctx.cancel`；3-Way Patience diff 有 200ms 超时，超时则放弃变基而不是应用粗糙 diff。
+   - `VersionRing` 存 `Arc<str>`，全局 `FILE_HISTORY` 锁内只做指针克隆，避免并发 `edit_file` 在锁上排队成死锁。
 
 ### 2.4 全写状态机与未读拦截自愈 (`write_file`)
 
