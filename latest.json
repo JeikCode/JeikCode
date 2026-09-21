@@ -15,8 +15,8 @@
       "size": 53491336
     },
     "linux-x64": {
-      "sha256": "4cd0d6cc2b9583ec7141ccd8044ccd719182b0cfbec3dbb42484ce34419ff431",
-      "size": 58175032
+      "sha256": "9fcde04583ce82cb9bcf4deac7dd20e96edf534df6ca68eca15c4e08eeca5fae",
+      "size": 58175336
     },
     "windows-arm64": {
       "sha256": "2977ebafb4b938c8f9b7398a7db99edb32c1dccc42008f88083203bb0c68e65e",
