@@ -14,8 +14,8 @@
 use super::bash_runtime::{
     active_background_tasks, add_live_long_keyword, classify_idle, decision_prompt,
     is_generic_long_keyword, new_bashid, push_background_alert, register_live_bash, tree_is_busy,
-    unregister_live_bash, waiting_for_stdin, BackgroundAlert, BusyKind, IdleAction, LiveBash,
-    KILLED_BY_TOOL_MARK, PROMOTED_MARK,
+    unregister_live_bash, BackgroundAlert, IdleAction, LiveBash, KILLED_BY_TOOL_MARK,
+    PROMOTED_MARK,
 };
 use super::{err, ok};
 use async_trait::async_trait;
@@ -155,7 +155,7 @@ impl Tool for BashTool {
                 "background": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Run the command as a managed background task (e.g. resident services like `npm run dev`, `uvicorn`, web servers). Observes the process for `settle_secs` to catch fast startup errors, then detaches and returns a `bashid` so the conversation can proceed. Idle/interactive processes also auto-detach. Send keys with `bash_send_keys`; stop with `bash_kill_by_id`."
+                    "description": "Run the command as a managed background task (e.g. resident services like `npm run dev`, `uvicorn`, web servers). Observes the process for `settle_secs` to catch fast startup errors, then detaches and returns a `bashid` so the conversation can proceed. Stop it later with `bash_kill_by_id`."
 
                 },
                 "settle_secs": {
@@ -313,7 +313,7 @@ impl Tool for BashTool {
         // setsid + TIOCNOTTY just below. No-op off Windows.
         crate::process_utils::detach_from_console(&mut cmd);
         cmd.current_dir(&ctx.working_dir)
-            .stdin(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true); // cancel / hard-cap drop SIGKILLs the child
@@ -368,18 +368,6 @@ impl Tool for BashTool {
         #[cfg(not(target_os = "windows"))]
         let mut child = PgroupChild::new(child);
         let child_pid = child.id();
-        let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        if let Some(mut si) = child.stdin.take() {
-            tokio::spawn(async move {
-                use tokio::io::AsyncWriteExt;
-                while let Some(buf) = key_rx.recv().await {
-                    if si.write_all(&buf).await.is_err() {
-                        break;
-                    }
-                    let _ = si.flush().await;
-                }
-            });
-        }
         let mut stdout = match child.stdout.take() {
             Some(pipe) => pipe,
             None => return annotate(err("bash: failed to capture stdout".to_string())),
@@ -409,8 +397,6 @@ impl Tool for BashTool {
             kill: tokio_util::sync::CancellationToken::new(),
             progress: progress.clone(),
             ring_buffer: Arc::new(Mutex::new(VecDeque::new())),
-            key_tx: Some(key_tx),
-            pid: child_pid,
         });
         register_live_bash(live.clone());
 
@@ -611,7 +597,7 @@ impl Tool for BashTool {
             });
 
             return annotate(ok(format!(
-                "Background task started successfully with bashid: `{bashid}`\nCommand: `{effective_command}`\n\nInitial output (settled for {settle_secs}s):\n{initial_output}\n\nThe process is now running in the background. Send input with `bash_send_keys` {{\"bashid\":\"{bashid}\",\"keys\":\"Enter\"}}. Stop with `bash_kill_by_id` {{\"bashid\":\"{bashid}\"}}."
+                "Background task started successfully with bashid: `{bashid}`\nCommand: `{effective_command}`\n\nInitial output (settled for {settle_secs}s):\n{initial_output}\n\nThe process is now running in the background. You can proceed to the next turn or stop it later with `bash_kill_by_id` using {{\"bashid\":\"{bashid}\"}}."
 
             )));
         }
@@ -619,7 +605,6 @@ impl Tool for BashTool {
         enum Drive {
             Result(ToolResult),
             Yield,
-            Detach,
         }
 
         let driven: Drive = loop {
@@ -697,28 +682,6 @@ impl Tool for BashTool {
                         Err(_) => stderr_done = true,
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_millis(1500)), if started_short => {
-                    if waiting_for_stdin(child_pid) {
-                        break Drive::Detach;
-                    }
-                    let silent_for = last_byte
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .elapsed();
-                    if silent_for >= Duration::from_secs(2) && has_output() {
-                        let (out, errb) = snapshot();
-                        if dangling_line_prompt(&out, &errb) {
-                            break Drive::Detach;
-                        }
-                        #[cfg(windows)]
-                        let busy = tree_is_busy(child_pid, &job_guard).await;
-                        #[cfg(not(windows))]
-                        let busy = tree_is_busy(child_pid).await;
-                        if busy != BusyKind::Yes {
-                            break Drive::Detach;
-                        }
-                    }
-                }
                 status = child.wait() => {
                     #[cfg(not(target_os = "windows"))]
                     {
@@ -749,14 +712,64 @@ impl Tool for BashTool {
                             *last_byte.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
                             progress.emit(format!("{PROMOTED_MARK} keyword={kw} (cpu busy)\n"));
                         }
-                        IdleAction::KillStuck
-                        | IdleAction::KillResident
-                        | IdleAction::AwaitDecision
-                        | IdleAction::DetachWaiter => {
-                            // Interactive / idle: return bashid now. second_level grace
-                            // existed to avoid KILLING a silent compile; compiles skip
-                            // idle entirely, so the extra 120s just blocks the turn.
-                            break Drive::Detach;
+                        IdleAction::KillStuck => {
+                            let already_second = live.second_level.swap(true, Ordering::SeqCst);
+                            if has_output()
+                                && second_levell_secs > 0
+                                && !already_second
+                                && !live.promoted.load(Ordering::SeqCst)
+                            {
+                                *last_byte.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Instant::now();
+                                progress.emit(format!(
+                                    "[bash second-level idle {second_levell_secs}s] \
+                                     output already seen; giving a silent compile a chance to start.\n"
+                                ));
+                            } else if has_output()
+                                && !live.promoted.load(Ordering::SeqCst)
+                            {
+                                break Drive::Yield;
+                            } else {
+                            #[cfg(windows)]
+                            crate::process_utils::kill_windows_tree(&job_guard, child_pid);
+                            #[cfg(not(target_os = "windows"))]
+                            if let Some(pgid) = child_pid {
+                                unsafe { killpg(pgid as i32, SIGKILL) };
+                            }
+                            unregister_live_bash(&bashid);
+                            let (out, errb) = snapshot();
+                            break Drive::Result(err(with_note(
+                                &out,
+                                &errb,
+                                &format!(
+                                    "bash: no new output for {idle_note_secs}s and the process is idle \
+                                     (pager, follow/watch, REPL, or waiting for a key). \
+                                     Captured output is above. Do not retry the same blocking command. \
+                                     Resident services must be started detached (nohup/systemd/docker -d)."
+                                ),
+                            )));
+                            }
+                        }
+                        IdleAction::KillResident => {
+                            #[cfg(windows)]
+                            crate::process_utils::kill_windows_tree(&job_guard, child_pid);
+                            #[cfg(not(target_os = "windows"))]
+                            if let Some(pgid) = child_pid {
+                                unsafe { killpg(pgid as i32, SIGKILL) };
+                            }
+                            unregister_live_bash(&bashid);
+                            let (out, errb) = snapshot();
+                            break Drive::Result(err(with_note(
+                                &out,
+                                &errb,
+                                "bash: this looks like a resident service (web server / proxy / compose without -d). \
+                                 Do not run it in the foreground and do not long_bash_keyword_actions. \
+                                 Start it in the background (`run_command` with `background=true`) or detached (`nohup … &`, `systemctl start`, `docker run -d`) \
+                                 then probe with ss/curl/systemctl is-active.",
+                            )));
+                        }
+                        IdleAction::AwaitDecision => {
+                            break Drive::Yield;
                         }
                     }
                 }
@@ -782,30 +795,13 @@ impl Tool for BashTool {
 
         match driven {
             Drive::Result(r) => annotate(r),
-            Drive::Yield | Drive::Detach => {
-                let detach = matches!(driven, Drive::Detach);
-                live.is_background.store(true, Ordering::SeqCst);
+            Drive::Yield => {
+                let suggested = suggested_long_keyword(&effective_command);
+                let prompt =
+                    decision_prompt(&bashid, idle_note_secs, second_levell_secs, &suggested);
+                progress.emit(format!("{prompt}\n"));
                 let (out, errb) = snapshot();
-                let body = if detach {
-                    progress.emit(format!(
-                        "[bash detached bashid={bashid} \u{2014} use bash_send_keys / bash_kill_by_id]\n"
-                    ));
-                    let initial = format_streams(&out, &errb, None, false);
-                    format!(
-                        "Detached idle/interactive shell to background with bashid: `{bashid}`\n\
-                         Command: `{effective_command}`\n\n\
-                         The process is still running and this pane keeps streaming.\n\
-                         Send input with `bash_send_keys` {{\"bashid\":\"{bashid}\",\"keys\":\"y Enter\"}}.\n\
-                         Stop with `bash_kill_by_id` {{\"bashid\":\"{bashid}\"}}.\n\n\
-                         Output so far:\n{initial}"
-                    )
-                } else {
-                    let suggested = suggested_long_keyword(&effective_command);
-                    let prompt =
-                        decision_prompt(&bashid, idle_note_secs, second_levell_secs, &suggested);
-                    progress.emit(format!("{prompt}\n"));
-                    with_note(&out, &errb, &prompt)
-                };
+                let body = with_note(&out, &errb, &prompt);
                 let progress_bg = progress.clone();
                 let live_sent_bg = live_sent.clone();
                 let stdout_cap_bg = stdout_cap.clone();
@@ -943,8 +939,7 @@ fn shell_tool_description(
              Use for builds, tests, package management, Git operations, binaries, and process checks. \
              Prefer dedicated tools for files: `read_file`, `grep`, `glob`, `list_directory`, `edit_file`, `write_file`. \
              `&&`, `||`, and `|` are supported. Use `;` only when the next command must run even if the previous failed. \
-             Shell pipelines and aggregation (such as wc, sort, uniq, git log) are supported. \
-             Interactive prompts auto-detach with a bashid; type with `bash_send_keys`. "
+             Shell pipelines and aggregation (such as wc, sort, uniq, git log) are supported."
         };
     }
     macro_rules! hang_suffix {
@@ -960,7 +955,7 @@ fn shell_tool_description(
              config `silent_kill_secs`: CPU-busy work is auto-promoted to a batch job; \
              disk/network IO is NOT auto-promoted and takes the `second_levell_secs` \
              grace, then `[bash-await-decision]` so you can kill or temporarily upgrade. \
-             A silent idle with no output detaches to background with a bashid (`bash_send_keys` / `bash_kill_by_id`). \
+             A silent idle with no output is killed (pager/REPL). \
              Resident servers (uvicorn/nginx/npm run dev) should be started with background=true (or started detached). \
              Compile/test families wait on `max_timeout_secs`."
         };
@@ -1908,19 +1903,6 @@ fn emit_live_chunk(
         return;
     }
     progress.emit(text);
-}
-
-/// Last captured bytes do not end in a newline — typical of `input()`, `read`,
-/// `Password:` prompts. Used as a cross-platform stdin-wait signal because
-/// Windows has no `/proc/.../syscall`.
-fn dangling_line_prompt(stdout: &[u8], stderr: &[u8]) -> bool {
-    fn dangling(buf: &[u8]) -> bool {
-        match buf.last() {
-            Some(&b) => b != b'\n' && b != b'\r',
-            None => false,
-        }
-    }
-    dangling(stdout) || dangling(stderr)
 }
 
 /// Append cwd / missing-tool guidance when a command failed for a platform reason
@@ -4430,6 +4412,41 @@ mod tests {
         assert!(rg.content.contains("ripgrep"), "{}", rg.content);
     }
 
+    #[tokio::test]
+    async fn platform_rewrites_fix_typical_wrong_commands() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = ctx(d.path());
+        async fn run(ctx: &ToolContext, cmd: &str) -> jeikcode_kernel::tool::ToolResult {
+            let args = serde_json::json!({ "command": cmd }).to_string();
+            BashTool.execute(&args, ctx).await
+        }
+
+        let py = run(&ctx, r#"python3 -c "print('PYOK')""#).await;
+        assert!(!py.is_error, "python3 should be rewritten to real python: {}", py.content);
+        assert!(py.content.contains("PYOK"), "{}", py.content);
+
+        let rg = run(&ctx, r#"printf 'hello\nworld\n' | rg hello"#).await;
+        assert!(!rg.is_error, "rg should become grep -E: {}", rg.content);
+        assert!(rg.content.contains("hello"), "{}", rg.content);
+
+        let path = run(&ctx, r"test -d C:\Windows && echo PATHOK").await;
+        assert!(!path.is_error, "unquoted C:\\ should become C:/ : {}", path.content);
+        assert!(path.content.contains("PATHOK"), "{}", path.content);
+
+        let nul = run(&ctx, "echo NOK > nul && test ! -f nul && echo NULOK").await;
+        assert!(!nul.is_error, "> nul should become /dev/null: {}", nul.content);
+        assert!(nul.content.contains("NULOK"), "{}", nul.content);
+        assert!(!d.path().join("nul").exists(), "must not create a nul file");
+
+        let miss = run(&ctx, "cat definitely_missing_file_xyz").await;
+        eprintln!("miss is_error={} content={}", miss.is_error, miss.content);
+        assert!(
+            miss.content.contains("[cwd:") || miss.content.contains("working directory") || miss.content.contains("No such file"),
+            "failure must include cwd or missing-file: {}",
+            miss.content
+        );
+    }
+
     #[test]
     fn looks_like_long_job_detects_compile_and_skips_short_reads() {
         assert!(super::looks_like_long_job("cargo build"));
@@ -4569,83 +4586,6 @@ mod tests {
             !active_after.iter().any(|t| t.bashid == bashid),
             "killed task must be removed from active tasks"
         );
-    }
-
-    #[tokio::test]
-    async fn bash_send_keys_feeds_read() {
-        use crate::tools::bash_runtime;
-        let d = tempfile::tempdir().unwrap();
-        let ctx = ctx(d.path());
-        let cmd = "read x; printf 'GOT:%s\\n' \"$x\"; sleep 20";
-        let args = serde_json::json!({
-            "command": cmd,
-            "background": true,
-            "settle_secs": 1
-        })
-        .to_string();
-        let res = BashTool.execute(&args, &ctx).await;
-        assert!(!res.is_error, "bg start: {}", res.content);
-        let bashid = bash_runtime::active_background_tasks()
-            .into_iter()
-            .find(|t| t.command == cmd)
-            .expect("live bash")
-            .bashid;
-        let send = crate::tools::bash_keys::BashSendKeysTool
-            .execute(
-                &serde_json::json!({"bashid": bashid, "keys": "hello Enter"}).to_string(),
-                &ctx,
-            )
-            .await;
-        assert!(!send.is_error, "send_keys: {}", send.content);
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-        let logs = bash_runtime::get_background_logs(&bashid, 30)
-            .unwrap_or_default()
-            .join("\n");
-        let combined = format!("{}\n{}", send.content, logs);
-        assert!(
-            combined.contains("GOT:hello"),
-            "expected GOT:hello in `{combined}`"
-        );
-        bash_runtime::kill_by_id(&bashid);
-    }
-
-    #[test]
-    fn dangling_line_prompt_detects_input_prompts() {
-        assert!(super::dangling_line_prompt(b"\xe8\xaf\xb7\xe8\xbe\x93\xe5\x85\xa5\xe7\xac\xac\xe4\xb8\x80\xe4\xb8\xaa\xe5\x8a\xa0\xe6\x95\xb0: ", b""));
-        assert!(!super::dangling_line_prompt(b"hello\n", b""));
-        assert!(!super::dangling_line_prompt(b"", b""));
-        assert!(super::dangling_line_prompt(b"", b"Password: "));
-    }
-
-    #[tokio::test]
-    async fn interactive_python_input_detaches_quickly() {
-        use crate::tools::bash_runtime;
-        let d = tempfile::tempdir().unwrap();
-        let ctx = ctx(d.path());
-        let cmd = "python -c \"import sys; sys.stdout.write('PROMPT>'); sys.stdout.flush(); x=input(); print('GOT'+x)\"";
-        let args = serde_json::json!({ "command": cmd }).to_string();
-        let res = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            BashTool.execute(&args, &ctx),
-        )
-        .await;
-        let res = match res {
-            Ok(r) => r,
-            Err(_) => panic!("interactive python occupied the turn >10s; should detach"),
-        };
-        assert!(!res.is_error, "{}", res.content);
-        assert!(
-            res.content.contains("bashid") || res.content.contains("Detached"),
-            "expected detach with bashid, got: {}",
-            res.content
-        );
-        if let Some(id) = bash_runtime::active_background_tasks()
-            .into_iter()
-            .find(|t| t.command.contains("PROMPT"))
-            .map(|t| t.bashid)
-        {
-            bash_runtime::kill_by_id(&id);
-        }
     }
 
     #[test]

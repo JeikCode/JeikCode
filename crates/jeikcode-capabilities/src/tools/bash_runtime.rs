@@ -33,9 +33,6 @@ pub struct LiveBash {
     pub kill: CancellationToken,
     pub progress: ProgressSink,
     pub ring_buffer: Arc<Mutex<VecDeque<String>>>,
-    /// Inject keystrokes; `None` if stdin was not a pipe.
-    pub key_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
-    pub pid: Option<u32>,
 }
 
 impl LiveBash {
@@ -78,11 +75,7 @@ pub enum IdleAction {
     #[allow(dead_code)]
     KillResident,
     /// Could not sample CPU; ask the model.
-    #[allow(dead_code)]
     AwaitDecision,
-    /// Process is alive but idle (stdin wait / prompt / sleep). Detach to
-    /// background with a bashid instead of killing the turn.
-    DetachWaiter,
 }
 
 /// Idle expiry: bytes already decided there was no new output.
@@ -91,13 +84,10 @@ pub enum IdleAction {
 pub fn classify_idle(has_output: bool, busy: BusyKind, resident: bool) -> IdleAction {
     match busy {
         BusyKind::Yes => IdleAction::AutoPromote,
-        // Idle + not computing: do not occupy the foreground turn. Detach with
-        // bashid so the model can `bash_send_keys` or `bash_kill_by_id`.
-        // Keyword lists cannot cover unknown interactive binaries.
-        BusyKind::No | BusyKind::Unknown => {
-            let _ = (has_output, resident);
-            IdleAction::DetachWaiter
-        }
+        BusyKind::No if resident && has_output => IdleAction::KillResident,
+        BusyKind::No => IdleAction::KillStuck,
+        BusyKind::Unknown if has_output => IdleAction::AwaitDecision,
+        BusyKind::Unknown => IdleAction::KillStuck,
     }
 }
 
@@ -338,102 +328,6 @@ pub fn kill_by_id(bashid: &str) -> bool {
     }
 }
 
-/// Write bytes to a live bash stdin pipe.
-pub fn send_stdin(bashid: &str, bytes: Vec<u8>) -> Result<(), String> {
-    let live = find_live_bash(bashid).ok_or_else(|| format!("no live bash `{bashid}`"))?;
-    let tx = live
-        .key_tx
-        .as_ref()
-        .ok_or_else(|| "this bash has no stdin pipe".to_string())?;
-    tx.send(bytes)
-        .map_err(|_| "stdin is closed (process likely exited)".to_string())
-}
-
-/// Best-effort SIGINT (Unix). Windows has no controlling console after
-/// CREATE_NO_WINDOW; callers still write ETX (`Ctrl+C`) to stdin.
-pub fn interrupt_by_id(bashid: &str) -> bool {
-    let Some(e) = find_live_bash(bashid) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        if let Some(pid) = e.pid {
-            unsafe {
-                libc::kill(pid as i32, libc::SIGINT);
-            }
-            return true;
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = e;
-    }
-    false
-}
-
-/// True when some process in the tree is blocked reading stdin (fd 0).
-/// Linux `/proc/<pid>/syscall`; other OS: false (idle-detach still applies).
-pub fn waiting_for_stdin(pid: Option<u32>) -> bool {
-    let Some(pid) = pid else {
-        return false;
-    };
-    #[cfg(target_os = "linux")]
-    {
-        linux_waiting_for_stdin(pid)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = pid;
-        false
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn linux_waiting_for_stdin(pgid: u32) -> bool {
-    let Ok(dir) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    for ent in dir.flatten() {
-        let name = ent.file_name();
-        let Some(s) = name.to_str() else { continue };
-        if !s.as_bytes().iter().all(|b| b.is_ascii_digit()) {
-            continue;
-        }
-        let Ok(stat) = std::fs::read_to_string(ent.path().join("stat")) else {
-            continue;
-        };
-        let Some((pgrp, _state, _)) = parse_linux_proc_stat(&stat) else {
-            continue;
-        };
-        if pgrp != pgid {
-            continue;
-        }
-        if let Ok(sc) = std::fs::read_to_string(ent.path().join("syscall")) {
-            let sc = sc.trim();
-            if sc != "running" {
-                let mut it = sc.split_whitespace();
-                let nr = it.next().unwrap_or("");
-                let fd = it.next().unwrap_or("");
-                // x86_64: read=0 readv=19 pread64=17. fd 0 = stdin.
-                if matches!(nr, "0" | "17" | "19") && matches!(fd, "0" | "0x0") {
-                    return true;
-                }
-            }
-        }
-        if let Ok(w) = std::fs::read_to_string(ent.path().join("wchan")) {
-            let w = w.trim();
-            if w.contains("tty")
-                || w.contains("pipe_wait")
-                || w.contains("pipe_read")
-                || w.contains("n_tty")
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Parse Linux `/proc/<pid>/stat`. Returns `(pgrp, state, utime+stime ticks)`.
 pub fn parse_linux_proc_stat(stat: &str) -> Option<(u32, char, u64)> {
     let after = stat.rsplit_once(')')?.1;
@@ -607,12 +501,12 @@ mod tests {
         use IdleAction::*;
         assert_eq!(classify_idle(false, Yes, false), AutoPromote);
         assert_eq!(classify_idle(true, Yes, false), AutoPromote);
-        assert_eq!(classify_idle(false, No, false), DetachWaiter);
-        assert_eq!(classify_idle(true, No, false), DetachWaiter);
-        assert_eq!(classify_idle(true, No, true), DetachWaiter);
-        assert_eq!(classify_idle(false, No, true), DetachWaiter);
-        assert_eq!(classify_idle(true, Unknown, false), DetachWaiter);
-        assert_eq!(classify_idle(false, Unknown, false), DetachWaiter);
+        assert_eq!(classify_idle(false, No, false), KillStuck);
+        assert_eq!(classify_idle(true, No, false), KillStuck);
+        assert_eq!(classify_idle(true, No, true), KillResident);
+        assert_eq!(classify_idle(false, No, true), KillStuck);
+        assert_eq!(classify_idle(true, Unknown, false), AwaitDecision);
+        assert_eq!(classify_idle(false, Unknown, false), KillStuck);
     }
 
     #[test]
