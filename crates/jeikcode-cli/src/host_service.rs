@@ -237,8 +237,12 @@ fn scan_systemd() -> Vec<HostServiceEntry> {
     if let Ok(read_dir) = std::fs::read_dir(&dir) {
         for entry in read_dir.flatten() {
             let file_name = entry.file_name().to_string_lossy().to_string();
-            // Match jeikcode-*.service (but NOT jeikcode-schedule-*.service)
-            if file_name.starts_with("jeikcode-") && file_name.ends_with(".service") {
+            // Match jeikcode-*.service or legacy atomcode-*.service (but NOT *-schedule-*.service)
+            let is_service = (file_name.starts_with("jeikcode-") || file_name.starts_with("atomcode-"))
+                && !file_name.starts_with("jeikcode-schedule-")
+                && !file_name.starts_with("atomcode-schedule-")
+                && file_name.ends_with(".service");
+            if is_service {
                 let port = parse_port_from_name(&file_name).unwrap_or(0);
                 let path = entry.path();
                 let status = check_systemd_active(&file_name);
@@ -478,8 +482,10 @@ fn scan_launchd() -> Vec<HostServiceEntry> {
         if let Ok(read_dir) = std::fs::read_dir(&launch_agents) {
             for entry in read_dir.flatten() {
                 let file_name = entry.file_name().to_string_lossy().to_string();
-                // Match com.jeikcode-*.plist
-                if file_name.starts_with("com.jeikcode-") && file_name.ends_with(".plist") {
+                // Match com.jeikcode-*.plist or legacy com.atomcode-*.plist
+                let is_plist = (file_name.starts_with("com.jeikcode-") || file_name.starts_with("com.atomcode-"))
+                    && file_name.ends_with(".plist");
+                if is_plist {
                     let port = parse_port_from_name(&file_name).unwrap_or(0);
                     let path = entry.path();
                     let label = file_name.replace(".plist", "");
@@ -689,8 +695,9 @@ fn scan_schtasks() -> Vec<HostServiceEntry> {
                 .trim_start_matches('"')
                 .trim_start_matches('\\')
                 .trim();
-            // Match JeikCode-* (case-insensitive)
-            if task_name.to_lowercase().starts_with("jeikcode-") {
+            // Match JeikCode-* or legacy AtomCode-* (case-insensitive)
+            let lower = task_name.to_lowercase();
+            if lower.starts_with("jeikcode-") || lower.starts_with("atomcode-") {
                 let port = parse_port_from_name(task_name).unwrap_or(0);
                 let status = if parts.len() >= 3 {
                     let s = parts[2].trim_end_matches('"').trim().to_lowercase();

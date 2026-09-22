@@ -123,6 +123,11 @@ else
     mv "$DEST" "$TARGET"
 fi
 
+ALIAS="$PREFIX/atomcode${ext}"
+if [ "$os" = "linux" ] || [ "$os" = "darwin" ] || [ "$os" = "ohos" ]; then
+    ln -sf "$TARGET" "$ALIAS" 2>/dev/null || cp -f --remove-destination "$TARGET" "$ALIAS" 2>/dev/null || sudo ln -sf "$TARGET" "$ALIAS" 2>/dev/null || sudo cp -f --remove-destination "$TARGET" "$ALIAS" 2>/dev/null || true
+fi
+
 echo ""
 echo "Installed: $TARGET"
 "$TARGET" --version 2>/dev/null || true

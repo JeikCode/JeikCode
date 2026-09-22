@@ -44,7 +44,7 @@ JeikCode 采用集中式端点解析机制（位于 `crates/jeikcode-config/src/
 ### 2.3 安全与原子更新保障（零停机热替换）
 1. **SHA256 强校验**：下载二进制后必须计算本地 SHA256，与清单不匹配立即回滚并报错；
 2. **原子文件替换（解决 Linux ETXTBSY 锁）**：采用 `atomic_copy_replace` 机制，先在目标同目录下生成临时文件并赋予 `0755` 权限，再通过 `rename` 原子覆盖目标路径。Linux 内核允许对运行中进程的文件名进行重命名解引用（原进程继续持有旧 inode 句柄），彻底杜绝常驻 systemd 服务在执行升级时因 `ETXTBSY (Text file busy)` 导致的写入失败与假成功问题；
-3. **别名同步原子化**：主二进制升级完成后，同步 `jeikcode`/`jeikcode` 别名同样使用原子替换，确保服务平滑重启。
+3. **别名同步原子化**：主二进制升级完成后，同步 `jeikcode`/`atomcode` 别名同样使用原子替换，确保服务平滑重启。
 
 ### 2.4 交互式配置同步默认勾选
 升级二进制后会扫描 `~/.jeikcode` 与内置模板的差异，弹出交互勾选列表（空格切换、`a` 全选、Enter 应用、ESC 跳过）：
@@ -111,7 +111,7 @@ auto_update_mins = 30
 ```
 
 ### 3.2 命令行升级与静默确认 (`upgrade -y`)
-- **常规交互升级**：`jeikcode upgrade`（或 `jeikcode upgrade`）下载新版本并弹出配置差异多选列表；
+- **常规交互升级**：`jeikcode upgrade`（或 `atomcode upgrade`）下载新版本并弹出配置差异多选列表；
 - **全自动静默升级 (`-y` / `--yes`)**：
   ```bash
   jeikcode upgrade -y

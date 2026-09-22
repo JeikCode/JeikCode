@@ -861,7 +861,7 @@ fn invoked_cli_name() -> &'static str {
                 p.file_stem()
                     .map(|s| s.to_string_lossy().to_ascii_lowercase())
             })
-            .filter(|s| s == "jeikcode" || s == "jeikcode")
+            .filter(|s| s == "jeikcode" || s == "atomcode")
             .unwrap_or_else(|| "jeikcode".into())
     })
     .as_str()
@@ -3923,7 +3923,7 @@ async fn run_upgrade_cli(force: bool, yes: bool) -> Result<()> {
                     version,
                     backup.display()
                 );
-                println!("  Run `jeikcode` (or `jeikcode`) to start the new version.");
+                println!("  Run `jeikcode` (or `atomcode`) to start the new version.");
 
                 // 🔍 由替换后的新版本二进制拉起差异扫描与交互多选（加载新二进制的内置资产）
                 let mut sync_cmd = std::process::Command::new(&exe);
@@ -4011,7 +4011,7 @@ fn run_rollback_cli() -> Result<()> {
         summary.exe.display(),
         summary.backup.display()
     );
-    println!("  Run `jeikcode` (or `jeikcode`) to start the rolled-back version.");
+    println!("  Run `jeikcode` (or `atomcode`) to start the rolled-back version.");
     Ok(())
 }
 
