@@ -160,8 +160,8 @@ $env:JEIKCODE_UPDATE_DOWNLOAD_BASE = "https://my-internal-repo.corp.com/jeikcode
    git push origin v7.0.1
    ```
 4. **GitHub Actions 自动化流水线并行构建**：
-   - **前端构建**：`build-webui` 自动编译 SPA 并生成 `webui-dist` 静态资源包；
-   - **三端并发**：macOS (darwin-arm64, darwin-x64)、Linux (linux-arm64, linux-x64 static musl)、Windows (windows-arm64, windows-x64) 矩阵并发编译；
+   - **前端构建**：`build-webui` 先把 Tag 写入 `Cargo.toml` 与 `JEIKCODE_VERSION`，再编译 SPA。WebUI 侧栏版本号在 `vite build` 时烘进 JS；若漏掉这一步，侧栏会一直显示工作区 `Cargo.toml` 里的旧号（与二进制 `jeikcode --version` 不一致）。运行时还会再读公开接口 `GET /health`（`CARGO_PKG_VERSION`）覆盖侧栏，确保与正在跑的二进制一致；
+   - **三端并发**：macOS (darwin-arm64, darwin-x64)、Linux (linux-arm64, linux-x64 static musl)、Windows (windows-arm64, windows-x64) 矩阵并发编译（Rust job 同样从 Tag sed `Cargo.toml`，因此 `jeikcode --version` / `/health` 为本次 Tag）；
    - **自动发布**：自动创建 GitHub Release `v7.0.1` 并归档 6 大平台二进制包。
 5. **（可选）补充自更新 SHA256 清单**：
    流水线完成后，运行 `bash scripts/release-self-update.sh v7.0.1 JeikCode/JeikCode` 提取正式产物的 sha256 与 size 写回 `latest.json` 并推至 `main`。

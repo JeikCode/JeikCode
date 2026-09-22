@@ -58,6 +58,17 @@ jobs:
           cache: npm
           cache-dependency-path: webui/package.json
 
+      # WebUI 侧栏版本号在 `vite build` 时从 Cargo.toml / JEIKCODE_VERSION 烘进 JS。
+      # Rust job 的 Tag 注入发生在本步之后，这里必须先注入，否则发布品侧栏会止步于工作区里的旧 version。
+      - name: Sync version from Git Tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG_NAME#v}
+          echo "Syncing Cargo.toml + JEIKCODE_VERSION to $VERSION from tag $TAG_NAME ..."
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          echo "JEIKCODE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
       - name: Build WebUI
         run: |
           cd webui

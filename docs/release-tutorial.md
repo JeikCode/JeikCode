@@ -89,8 +89,8 @@ git push origin v7.0.2
 
 #### 流水线在云端自动完成的全部闭环工作：
 1. **编译期自动版本注入**：
-   - 3 大 Runner 在编译前自动从 Git Tag 提取纯数字版本号（`v7.0.2` → `7.0.2`），动态写入 `Cargo.toml`；
-   - 编译出的全部 6 平台二进制内部直接烙印本次 Tag 版本号（`jeikcode --version` 严格输出 `v7.0.2`）；
+   - `build-webui` 与 3 大 Rust Runner 都会在编译前从 Git Tag 提取纯数字版本号（`v7.0.2` → `7.0.2`），动态写入 `Cargo.toml` / `JEIKCODE_VERSION`；
+   - 编译出的全部 6 平台二进制内部直接烙印本次 Tag 版本号（`jeikcode --version` 与 WebUI 侧栏 / `GET /health` 均为本次 Tag）；
 2. **x86_64 优先编译与即时发布**：
    - Windows Runner 优先编译 x86_64 并**立即发布** `windows-x64.exe`；Linux/macOS 同样 x86_64 优先；
 3. **全自动全量元数据同步回写**：

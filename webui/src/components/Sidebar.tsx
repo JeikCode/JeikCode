@@ -4,7 +4,8 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { createPortal } from 'preact/compat';
-import { listSessions, listProjectSessions, searchSessions, getSkills, getMcpStatus, postMcpReload, postLiveMcpTrust, getSession, getProjects, getActiveChatSessions, SkillInfo, McpStatusInfo, SessionMetaWithProject, ProjectInfo } from '../api';
+import { listSessions, listProjectSessions, searchSessions, getSkills, getMcpStatus, postMcpReload, postLiveMcpTrust, getSession, getProjects, getActiveChatSessions, getHealth, SkillInfo, McpStatusInfo, SessionMetaWithProject, ProjectInfo } from '../api';
+import { bakedAppVersion, formatAppVersionLabel, normalizeAppVersion } from '../lib/appVersion';
 import { useT, useSettings, SettingsSection, Theme } from '../settings';
 import { MsgKey, Lang } from '../i18n';
 import { RenameDialog, DeleteDialog } from './SessionDialogs';
@@ -290,6 +291,7 @@ export function Sidebar({
 }: SidebarProps) {
   const t = useT();
   const { theme, setTheme, lang, setLang } = useSettings();
+  const [appVersion, setAppVersion] = useState(bakedAppVersion());
   const [sessions, setSessions] = useState<SessionMetaWithProject[]>([]);
   const [loading, setLoading] = useState(true);
   // 活跃（正在运行 turn）的会话 id，来自 GET /chat/active；配合 5s 轮询，
@@ -398,6 +400,22 @@ export function Sidebar({
         if (epoch === loadEpochRef.current && !silent) setLoading(false);
       });
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    getHealth()
+      .then((info) => {
+        if (cancelled) return;
+        const running = normalizeAppVersion(info.version);
+        if (running) setAppVersion(running);
+      })
+      .catch(() => {
+        /* keep the Vite-baked fallback */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     loadSessions();
@@ -1258,7 +1276,7 @@ export function Sidebar({
       <div class="sidebar-brand-row">
         <span class="sidebar-brand">
 <span class="sidebar-brand-name">JeikCode</span>
-          <span class="sidebar-brand-version">v{typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "6.0.30"}</span>
+          <span class="sidebar-brand-version">{formatAppVersionLabel(appVersion) || 'v?'}</span>
         </span>
         <span class="sidebar-brand-btns">
           <button

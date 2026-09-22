@@ -66,6 +66,21 @@ export function getToken(): string {
   return token;
 }
 
+export interface HealthInfo {
+  status: string;
+  version: string;
+  service: string;
+  binary_hash?: string;
+  instance_id?: string;
+}
+
+/** Public GET /health — version matches the running binary (CARGO_PKG_VERSION). */
+export async function getHealth(): Promise<HealthInfo> {
+  const resp = await apiFetch('/health');
+  if (!resp.ok) throw new Error(`health failed: ${resp.status}`);
+  return resp.json() as Promise<HealthInfo>;
+}
+
 export type SSEEvent =
   | { type: 'runtime_info'; provider: string; model: string }
   | { type: 'session_assigned'; session_id: string }

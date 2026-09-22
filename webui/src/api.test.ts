@@ -326,3 +326,23 @@ test('getActiveChatSessions reads the authoritative detached chat registry', asy
     globalThis.fetch = originalFetch;
   }
 });
+
+test('getHealth reads the running binary version from GET /health', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: RequestInfo | URL) => {
+    assert.equal(String(url), '/health');
+    return new Response(
+      JSON.stringify({ status: 'ok', version: '7.0.13', service: 'jeikcode-daemon' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const { getHealth } = await import('./api.ts');
+    const health = await getHealth();
+    assert.equal(health.version, '7.0.13');
+    assert.equal(health.service, 'jeikcode-daemon');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
