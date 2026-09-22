@@ -39,11 +39,6 @@ fn main() {
         .unwrap_or(false);
 
     println!("cargo:rustc-env=JEIKCODE_BUILD_ID={}", hash);
-    println!("cargo:rustc-env=JEIKCODE_BUILD_ID={}", hash);
-    println!(
-        "cargo:rustc-env=JEIKCODE_BUILD_DIRTY={}",
-        if dirty { "+dirty" } else { "" }
-    );
     println!(
         "cargo:rustc-env=JEIKCODE_BUILD_DIRTY={}",
         if dirty { "+dirty" } else { "" }
@@ -52,7 +47,7 @@ fn main() {
     // Embed icon when targeting Windows.
     let bin_name = std::env::var("CARGO_BIN_NAME").unwrap_or_default();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
-        && (bin_name.is_empty() || bin_name == "jeikcode" || bin_name == "jeikcode")
+        && (bin_name.is_empty() || bin_name == "jeikcode" || bin_name == "atomcode")
     {
         let icon = "assets/jeikcode.ico";
         println!("cargo:rerun-if-changed={}", icon);

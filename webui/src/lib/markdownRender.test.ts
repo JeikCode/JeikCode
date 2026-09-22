@@ -48,3 +48,30 @@ test('two indented ```text fences in one numbered list both render', () => {
   assert.equal((out.match(/code-block-wrapper/g) ?? []).length, 2);
   assert.doesNotMatch(out, /<p>[^<]*```/);
 });
+
+test('code fence inside list ending with backslash closes properly without swallowing following text', () => {
+  const content = [
+    '- **开发与构建目录**：',
+    '  ```text',
+    '  E:\\code\\jeikcode\\target\\',
+    '  E:\\code\\Antigravity-Manager\\src-tauri\\target\\',
+    '  %USERPROFILE%\\.cargo\\bin\\',
+    '  ```',
+    '- **进程白名单**：',
+    '  - `jeikcode.exe`',
+    '  - `atomcode.exe`',
+    '',
+    '#### 2. Linux 服务器环境',
+    '',
+    '- **二进制目录与文件**：',
+    '  ```text',
+    '  /usr/local/bin/jeikcode',
+    '  /usr/local/bin/atomcode',
+    '  ```',
+  ].join('\n');
+  const out = markdownToHtml(content);
+  assert.match(out, /<strong>进程白名单<\/strong>/);
+  assert.match(out, /<h4[^>]*>2\. Linux 服务器环境<\/h4>/);
+  assert.match(out, /<strong>二进制目录与文件<\/strong>/);
+  assert.equal((out.match(/code-block-wrapper/g) ?? []).length, 2);
+});

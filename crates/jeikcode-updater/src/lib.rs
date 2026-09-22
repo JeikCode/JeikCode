@@ -621,7 +621,7 @@ fn copy_across_devices(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Keep `jeikcode` and `jeikcode` as the same binary. After replacing one,
+/// Keep `jeikcode` and `atomcode` as the same binary. After replacing one,
 /// atomically replace the sibling name in the same directory (best-effort).
 /// Uses `atomic_copy_replace` so that if the sibling alias is currently
 /// running as a background service/process, it won't fail with ETXTBSY.
@@ -629,10 +629,10 @@ fn sync_cli_alias(exe: &Path) {
     let Some(stem) = exe.file_stem().and_then(|s| s.to_str()) else {
         return;
     };
-    let other = if stem.eq_ignore_ascii_case("jeikcode") {
+    let other = if stem.eq_ignore_ascii_case("atomcode") {
         "jeikcode"
     } else if stem.eq_ignore_ascii_case("jeikcode") {
-        "jeikcode"
+        "atomcode"
     } else {
         return;
     };
@@ -784,7 +784,7 @@ pub async fn run_upgrade(
             let p = e.path();
             if p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("jeikcode-") || n.starts_with("jeikcode-"))
+                .is_some_and(|n| n.starts_with("jeikcode-") || n.starts_with("atomcode-"))
             {
                 let _ = std::fs::remove_file(&p);
             }
@@ -1695,6 +1695,23 @@ mod tests {
 
         assert_eq!(std::fs::read(&exe).unwrap(), b"OLD");
         assert_eq!(std::fs::read(&bak).unwrap(), b"NEW");
+    }
+
+    #[test]
+    fn sync_cli_alias_synchronizes_bidirectionally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jeikcode = tmp.path().join("jeikcode");
+        let atomcode = tmp.path().join("atomcode");
+
+        // When upgrading jeikcode, atomcode alias should be created/synced
+        std::fs::write(&jeikcode, b"VERSION_NEW").unwrap();
+        sync_cli_alias(&jeikcode);
+        assert_eq!(std::fs::read(&atomcode).unwrap(), b"VERSION_NEW");
+
+        // When upgrading atomcode, jeikcode alias should be created/synced
+        std::fs::write(&atomcode, b"VERSION_NEXT").unwrap();
+        sync_cli_alias(&atomcode);
+        assert_eq!(std::fs::read(&jeikcode).unwrap(), b"VERSION_NEXT");
     }
 
     #[test]

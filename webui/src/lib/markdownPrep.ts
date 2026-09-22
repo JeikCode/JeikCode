@@ -369,8 +369,23 @@ export function preprocessMarkdown(raw: string): string {
     let line = lines[i];
 
     if (inFence) {
+      if (fenceClose(line, inFence)) {
+        // 若代码块内最后一行以奇数个反斜杠 `\` 结尾（如 Windows 路径 C:\foo\），
+        // marked 会把 `\` + `\n` 当作换行转义，导致闭合围栏 ``` 被粘进上一行而无法闭合代码块，
+        // 进而把整篇后续文本全吞进一个未闭合代码块。追加空格消除转义，确保围栏正常闭合。
+        if (result.length > 0) {
+          const prev = result[result.length - 1];
+          let slashes = 0;
+          for (let k = prev.length - 1; k >= 0 && prev[k] === '\\'; k--) {
+            slashes++;
+          }
+          if (slashes % 2 === 1) {
+            result[result.length - 1] = prev + ' ';
+          }
+        }
+        inFence = null;
+      }
       result.push(line);
-      if (fenceClose(line, inFence)) inFence = null;
       continue;
     }
 

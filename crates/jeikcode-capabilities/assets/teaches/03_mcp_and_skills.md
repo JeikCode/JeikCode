@@ -11,7 +11,7 @@ JeikCode 支持连接任何遵循标准 MCP 协议的外部工具服务。
 
 ### 1.2 CLI 添加 MCP（`jeikcode mcp`，最快；仅 stdio）
 
-二进制名 `jeikcode` 与 `jeikcode` 等价。**同名会整段覆盖**该键（只写 `command`/`args`，原有 `env` 等字段不保留）。HTTP 型 server 请手写 JSON。
+二进制名 `jeikcode` 与 `atomcode` 等价。**同名会整段覆盖**该键（只写 `command`/`args`，原有 `env` 等字段不保留）。HTTP 型 server 请手写 JSON。
 
 ```bash
 # 写进项目根 .mcp.json（默认当前目录）
