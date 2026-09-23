@@ -493,6 +493,11 @@ pub(crate) fn path_in_upload_store(path: &Path) -> bool {
 
 fn apply_skip_dirs(builder: &mut WalkBuilder) {
     builder.filter_entry(|e| {
+        // The root entry being searched (depth 0) must never be pruned by name,
+        // even if the caller explicitly targeted a directory named e.g. "target" or "node_modules".
+        if e.depth() == 0 {
+            return true;
+        }
         if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             if let Some(name) = e.file_name().to_str() {
                 if is_upload_store_dir(name) {
@@ -568,12 +573,23 @@ pub(crate) fn for_each_project_entry(
         return;
     }
 
+    // If the caller explicitly targeted a directory inside or under a skip-listed path
+    // (e.g. `node_modules/@lobehub/icons` or `target/doc`), disable parent gitignore
+    // filtering so the explicitly requested directory can actually be searched.
+    // Descendants (depth > 0) still adhere to `apply_skip_dirs` to prevent noise explosion.
+    let root_in_skip_or_ignore = root
+        .components()
+        .any(|c| c.as_os_str().to_str().map(is_skip_dir).unwrap_or(false));
+    let git_ignore_active = !root_in_skip_or_ignore;
+
     let mut main = WalkBuilder::new(root);
     main.hidden(hidden)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true);
-    add_codegraph_ignores(&mut main);
+        .git_ignore(git_ignore_active)
+        .git_global(git_ignore_active)
+        .git_exclude(git_ignore_active);
+    if git_ignore_active {
+        add_codegraph_ignores(&mut main);
+    }
     run(main);
 
     let store = root.join(USER_UPLOAD_STORE_DIR);

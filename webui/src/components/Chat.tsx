@@ -5048,32 +5048,32 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
             const billableStr = billable.toLocaleString();
 
             const tooltipLines: string[] = [
-              '📊 Token 与上下文占用详情',
+              t('tokens.tooltipTitle'),
               '──────────────────────────────',
-              `📥 输入 (history): ${promptStr}`,
+              `${t('tokens.inputLabel')}: ${promptStr}`,
             ];
             if (cached > 0) {
               if (isEstimated) {
-                tooltipLines.push(`⚡ 预估缓存: ${cachedStr} (${stepPct} 预估)`);
+                tooltipLines.push(`⚡ ${t('tokens.estimatedCache')}: ${cachedStr} (${stepPct} ${t('tokens.estBadge')})`);
               } else {
-                tooltipLines.push(`⚡ 在线缓存命中: ${cachedStr} (${stepPct} 命中)`);
+                tooltipLines.push(`⚡ ${t('tokens.onlineCacheHit')}: ${cachedStr} (${stepPct} ${t('tokens.hitBadge')})`);
               }
             }
             if (multiStep && loopPct) {
-              tooltipLines.push(`⚡ 本轮多次调用综合节省: ${loopCached.toLocaleString()} / ${loopPrompt.toLocaleString()} (${loopPct})`);
+              tooltipLines.push(`⚡ ${t('tokens.loopSavingsLabel')}: ${loopCached.toLocaleString()} / ${loopPrompt.toLocaleString()} (${loopPct})`);
             }
             if (reasoning > 0) {
               const contentTokens = Math.max(0, completion - reasoning);
-              tooltipLines.push(`📤 输出 (Completion): ${completionStr} (正文 ${contentTokens.toLocaleString()} · 思考 ${reasoningStr})`);
+              tooltipLines.push(`📤 ${t('tokens.outputLabel')}: ${completionStr} (${t('tokens.contentReasoning', { content: contentTokens.toLocaleString(), reasoning: reasoningStr })})`);
             } else {
-              tooltipLines.push(`📤 输出 (Completion): ${completionStr}`);
+              tooltipLines.push(`📤 ${t('tokens.outputLabel')}: ${completionStr}`);
             }
             if (contextLimit) {
-              tooltipLines.push(`🎯 当前总上下文: ${totalStr} / ${limitStr} (${pctOfLimit}%)`);
+              tooltipLines.push(`🎯 ${t('tokens.totalContext')}: ${totalStr} / ${limitStr} (${pctOfLimit}%)`);
             } else {
-              tooltipLines.push(`🎯 当前总上下文: ${totalStr}`);
+              tooltipLines.push(`🎯 ${t('tokens.totalContext')}: ${totalStr}`);
             }
-            tooltipLines.push(`💡 计费估算 Token: ${billableStr}`);
+            tooltipLines.push(`💡 ${t('tokens.billableTokens')}: ${billableStr}`);
             const tooltipText = tooltipLines.join('\n');
 
             return (
@@ -5097,11 +5097,11 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                   aria-haspopup="dialog"
                   aria-expanded={showTokenDetails}
                 >
-                  <span class="token-pill token-prompt" title={`输入 (history): ${promptStr}`}>
+                  <span class="token-pill token-prompt" title={t('tokens.inputTooltip', { n: promptStr })}>
                     <span class="token-icon">↓</span>
                     <span>input: {formatTokenMetric(prompt)}</span>
                   </span>
-                  <span class="token-pill token-completion" title={`输出生成 (Completion): ${completionStr}${reasoning > 0 ? ` (含思考 ${reasoningStr})` : ''}`}>
+                  <span class="token-pill token-completion" title={`${t('tokens.outputTooltip', { n: completionStr })}${reasoning > 0 ? t('tokens.outputWithReasoning', { n: reasoningStr }) : ''}`}>
                     <span class="token-icon">↑</span>
                     <span>output: {formatTokenMetric(completion)}</span>
                   </span>
@@ -5110,10 +5110,10 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                       class={'token-pill token-cached' + (isEstimated ? ' is-estimated' : '')}
                       title={
                         multiStep && loopPct
-                          ? `最新单帧命中: ${cachedStr} / ${promptStr} (${stepPct ?? '0%'})\n本轮综合节省: ${loopCached.toLocaleString()} / ${loopPrompt.toLocaleString()} (${loopPct})`
+                          ? t('tokens.cacheFrameTooltip', { cached: cachedStr, prompt: promptStr, pct: stepPct ?? '0%', loopCached: loopCached.toLocaleString(), loopPrompt: loopPrompt.toLocaleString(), loopPct })
                           : isEstimated
-                            ? `预估缓存: ${cachedStr} (${stepPct} 预估)`
-                            : `在线缓存命中: ${cachedStr} (${stepPct})`
+                            ? `⚡ ${t('tokens.estimatedCache')}: ${cachedStr} (${stepPct} ${t('tokens.estBadge')})`
+                            : `⚡ ${t('tokens.onlineCacheHit')}: ${cachedStr} (${stepPct} ${t('tokens.hitBadge')})`
                       }
                     >
                       <span class="token-icon">⚡</span>
@@ -5121,18 +5121,18 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                     </span>
                   )}
                   {reasoning > 0 && (
-                    <span class="token-pill token-reasoning" title={`思考过程 (Reasoning): ${reasoningStr}`}>
+                    <span class="token-pill token-reasoning" title={t('tokens.reasoningTooltip', { n: reasoningStr })}>
                       <span class="token-icon">💭</span>
                       <span>{formatTokenMetric(reasoning)}</span>
                     </span>
                   )}
                   {contextLimit ? (
-                    <span class="token-pill token-total" title={`上下文窗口使用率: ${totalStr} / ${limitStr} (${pctOfLimit}%)`}>
+                    <span class="token-pill token-total" title={t('tokens.totalLimitTooltip', { total: totalStr, limit: limitStr, pct: pctOfLimit })}>
                       <span class="token-icon">🎯</span>
                       <span>{formatTokenMetric(total)}/{formatTokenMetric(contextLimit)} ({pctOfLimit}%)</span>
                     </span>
                   ) : (
-                    <span class="token-pill token-total" title={`当前总上下文: ${totalStr}`}>
+                    <span class="token-pill token-total" title={t('tokens.totalTooltip', { total: totalStr })}>
                       <span class="token-icon">🎯</span>
                       <span>{formatTokenMetric(total)}</span>
                     </span>
@@ -5144,13 +5144,13 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                     class="token-details-popover"
                     ref={tokenPopoverRef}
                     role="dialog"
-                    aria-label="Token 与上下文占用详情"
+                    aria-label={t('tokens.popoverTitle')}
                     onClick={(e) => e.stopPropagation()}
                   >
                     <div class="token-popover-header">
                       <div class="token-popover-title">
                         <span class="token-popover-icon">📊</span>
-                        <span>Token 与上下文占用详情</span>
+                        <span>{t('tokens.popoverTitle')}</span>
                       </div>
                       <button
                         type="button"
@@ -5159,8 +5159,8 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                           e.stopPropagation();
                           setShowTokenDetails(false);
                         }}
-                        title="关闭"
-                        aria-label="关闭"
+                        title={t('tokens.close')}
+                        aria-label={t('tokens.close')}
                       >
                         ✕
                       </button>
@@ -5169,7 +5169,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                     {contextLimit && (
                       <div class="token-popover-progress-box">
                         <div class="token-popover-progress-labels">
-                          <span class="token-popover-progress-title">🎯 上下文窗口预算</span>
+                          <span class="token-popover-progress-title">{t('tokens.budgetTitle')}</span>
                           <span class="token-popover-progress-val">
                             {totalStr} / {limitStr} ({pctOfLimit}%)
                           </span>
@@ -5195,7 +5195,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                       <div class="token-popover-row">
                         <div class="token-popover-row-left">
                           <span class="token-row-icon">📥</span>
-                          <span class="token-row-label">输入 (history)</span>
+                          <span class="token-row-label">{t('tokens.inputLabel')}</span>
                         </div>
                         <span class="token-popover-row-val">{promptStr}</span>
                       </div>
@@ -5205,13 +5205,13 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                           <div class="token-popover-row-left">
                             <span class="token-row-icon">⚡</span>
                             <span class="token-row-label">
-                              {isEstimated ? '预估缓存' : '在线缓存命中'}
+                              {isEstimated ? t('tokens.estimatedCache') : t('tokens.onlineCacheHit')}
                             </span>
                           </div>
                           <div class="token-popover-row-val-group">
                             <span class="token-popover-row-val">{cachedStr}</span>
                             <span class="token-popover-row-badge">
-                              {stepPct} {isEstimated ? '预估' : '命中'}
+                              {stepPct} {isEstimated ? t('tokens.estBadge') : t('tokens.hitBadge')}
                             </span>
                           </div>
                         </div>
@@ -5221,7 +5221,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                         <div class="token-popover-row is-cached">
                           <div class="token-popover-row-left">
                             <span class="token-row-icon">⚡</span>
-                            <span class="token-row-label">本轮综合命中</span>
+                            <span class="token-row-label">{t('tokens.loopHitLabel')}</span>
                           </div>
                           <div class="token-popover-row-val-group">
                             <span class="token-popover-row-val">
@@ -5235,13 +5235,13 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                       <div class="token-popover-row">
                         <div class="token-popover-row-left">
                           <span class="token-row-icon">📤</span>
-                          <span class="token-row-label">输出 (Completion)</span>
+                          <span class="token-row-label">{t('tokens.outputLabel')}</span>
                         </div>
                         <div class="token-popover-row-val-group">
                           <span class="token-popover-row-val">{completionStr}</span>
                           {reasoning > 0 && (
                             <span class="token-popover-row-sub">
-                              正文 {Math.max(0, completion - reasoning).toLocaleString()} · 思考 {reasoningStr}
+                              {t('tokens.contentReasoning', { content: Math.max(0, completion - reasoning).toLocaleString(), reasoning: reasoningStr })}
                             </span>
                           )}
                         </div>
@@ -5250,7 +5250,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                       <div class="token-popover-row is-total">
                         <div class="token-popover-row-left">
                           <span class="token-row-icon">🎯</span>
-                          <span class="token-row-label">当前总上下文</span>
+                          <span class="token-row-label">{t('tokens.totalContext')}</span>
                         </div>
                         <span class="token-popover-row-val">
                           {totalStr}
@@ -5261,7 +5261,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                       <div class="token-popover-row is-billable">
                         <div class="token-popover-row-left">
                           <span class="token-row-icon">💡</span>
-                          <span class="token-row-label">计费估算 Token</span>
+                          <span class="token-row-label">{t('tokens.billableTokens')}</span>
                         </div>
                         <span class="token-popover-row-val">{billableStr}</span>
                       </div>

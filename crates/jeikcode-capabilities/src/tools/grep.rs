@@ -179,7 +179,7 @@ impl Tool for GrepTool {
                 },
                 "case_insensitive": {
                     "type": "boolean",
-                    "description": "Case-insensitive matching. Omitted: smart-case (insensitive unless the pattern contains an uppercase letter). true: always insensitive. false: always sensitive."
+                    "description": "Case-insensitive matching. Defaults to true (agent-friendly case-insensitive search). Set false for exact case-sensitive matching."
                 },
                 "max_results": {
                     "type": "integer",
@@ -202,7 +202,11 @@ impl Tool for GrepTool {
             Ok(v) => v,
             Err(e) => return e.into_tool_result(),
         };
-        let raw = a.path.clone().unwrap_or_else(|| ".".to_string());
+        let raw = a
+            .path
+            .clone()
+            .unwrap_or_else(|| ".".to_string())
+            .replace('\\', "/");
         let root = resolve_path(&raw, &ctx.working_dir);
         let root_meta = match tokio::fs::metadata(&root).await {
             Ok(m) => m,
@@ -259,12 +263,8 @@ impl Tool for GrepTool {
             }
         };
 
-        // Smart-case when the flag is omitted; explicit true/false force the mode.
-        let is_case_insensitive = match a.case_insensitive {
-            Some(true) => true,
-            Some(false) => false,
-            None => !a.pattern.chars().any(|c| c.is_uppercase()),
-        };
+        // Defaults to case-insensitive for agent exploration unless explicitly forced via false.
+        let is_case_insensitive = a.case_insensitive.unwrap_or(true);
         let matcher = match RegexMatcherBuilder::new()
             .case_insensitive(is_case_insensitive)
             .build(&a.pattern)
@@ -1185,21 +1185,20 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("file.txt"), "hello world\n").unwrap();
 
-        // Pattern has uppercase; by default smart-case makes it case-sensitive:
+        // Pattern has uppercase; by default agent exploration is case-insensitive:
         let r1 = GrepTool
             .execute(r#"{"pattern":"HELLO"}"#, &ctx(d.path()))
             .await;
-        assert!(r1.content.contains("No matches found"));
+        assert!(r1.content.contains("hello world"), "{}", r1.content);
 
-        // With case_insensitive: true, it matches:
+        // With case_insensitive: false, it is strictly case-sensitive:
         let r2 = GrepTool
             .execute(
-                r#"{"pattern":"HELLO","case_insensitive":true}"#,
+                r#"{"pattern":"HELLO","case_insensitive":false}"#,
                 &ctx(d.path()),
             )
             .await;
-        assert!(!r2.is_error, "{}", r2.content);
-        assert!(r2.content.contains("hello world"), "{}", r2.content);
+        assert!(r2.content.contains("No matches found"), "{}", r2.content);
 
         // Alias "i" also works:
         let r3 = GrepTool
@@ -1446,6 +1445,39 @@ mod tests {
             !r_strict.content.contains("Hello"),
             "explicit false must not match Hello: {}",
             r_strict.content
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_path_under_skip_dirs_can_be_searched() {
+        let d = tempfile::tempdir().unwrap();
+        let nm = d.path().join("node_modules").join("my-lib");
+        std::fs::create_dir_all(&nm).unwrap();
+        std::fs::write(nm.join("index.js"), "export const TARGET = 42;\n").unwrap();
+
+        // Searching root directory ignores node_modules by default (zero noise):
+        let r_root = GrepTool
+            .execute(r#"{"pattern":"TARGET"}"#, &ctx(d.path()))
+            .await;
+        assert!(
+            r_root.content.contains("No matches found"),
+            "{}",
+            r_root.content
+        );
+
+        // Explicitly targeting the sub-package path allows searching it:
+        let r_pkg = GrepTool
+            .execute(
+                r#"{"pattern":"TARGET","path":"node_modules/my-lib"}"#,
+                &ctx(d.path()),
+            )
+            .await;
+        assert!(
+            r_pkg
+                .content
+                .contains("index.js:1:export const TARGET = 42;"),
+            "{}",
+            r_pkg.content
         );
     }
 

@@ -187,9 +187,9 @@ tools:
       case_insensitive:
         type: "boolean"
         required: false
-        default: false
-        # 【中文】：是否忽略大小写（默认 false）。
-        description: "Case-insensitive matching (default: false)."
+        default: true
+        # 【中文】：是否忽略大小写（默认 true，默认不区分大小写；设为 false 开启精确大小写匹配）。
+        description: "Case-insensitive matching (default: true; set false for exact case-sensitive matching)."
       max_results:
         type: "integer"
         required: false
