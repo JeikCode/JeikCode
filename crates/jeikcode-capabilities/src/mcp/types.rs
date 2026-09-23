@@ -143,20 +143,34 @@ pub struct ListToolsResult {
     pub tools: Vec<McpToolDefinition>,
 }
 
+fn default_image_mime_type() -> String {
+    "image/png".to_string()
+}
+
 /// Tool call result content.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        #[serde(default)]
+        text: String,
+    },
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        #[serde(default)]
+        data: String,
+        #[serde(rename = "mimeType", alias = "mime_type", default = "default_image_mime_type")]
+        mime_type: String,
+    },
     #[serde(rename = "resource")]
     Resource { resource: ResourceContent },
+    #[serde(other)]
+    Unknown,
 }
 
 /// Resource content in tool result.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ResourceContent {
     #[serde(default)]
     pub uri: String,
@@ -164,16 +178,80 @@ pub struct ResourceContent {
     pub text: Option<String>,
     #[serde(default)]
     pub blob: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "mimeType", alias = "mime_type", default)]
     pub mime_type: Option<String>,
 }
 
 /// Tool call result.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CallToolResult {
-    pub content: Vec<ContentBlock>,
     #[serde(default)]
+    pub content: Vec<ContentBlock>,
+    #[serde(rename = "isError", alias = "is_error", default)]
     pub is_error: bool,
+}
+
+impl CallToolResult {
+    /// Leniently parse a tool call result value from standard MCP responses,
+    /// camelCase/snake_case variations, and non-standard fallbacks.
+    pub fn parse_lenient(value: serde_json::Value) -> Self {
+        // 1. Standard or tolerant serde deserialization
+        if let Ok(res) = serde_json::from_value::<Self>(value.clone()) {
+            let has_meaningful_content = res.content.iter().any(|b| !matches!(b, ContentBlock::Unknown));
+            let had_content_field = value.as_object().and_then(|m| m.get("content")).is_some();
+            if has_meaningful_content || had_content_field {
+                return res;
+            }
+        }
+
+        // 2. Fallback for object with string content, text, or result
+        if let serde_json::Value::Object(mut map) = value.clone() {
+            let is_error = map
+                .get("isError")
+                .or_else(|| map.get("is_error"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            if let Some(content_val) = map.remove("content") {
+                if let serde_json::Value::String(s) = content_val {
+                    return Self {
+                        content: vec![ContentBlock::Text { text: s }],
+                        is_error,
+                    };
+                }
+            }
+
+            if let Some(serde_json::Value::String(s)) = map.remove("text") {
+                return Self {
+                    content: vec![ContentBlock::Text { text: s }],
+                    is_error,
+                };
+            }
+
+            if let Some(serde_json::Value::String(s)) = map.remove("result") {
+                return Self {
+                    content: vec![ContentBlock::Text { text: s }],
+                    is_error,
+                };
+            }
+        }
+
+        // 3. Fallback for primitive string
+        if let serde_json::Value::String(s) = value.clone() {
+            return Self {
+                content: vec![ContentBlock::Text { text: s }],
+                is_error: false,
+            };
+        }
+
+        // 4. Ultimate fallback: stringify the JSON value as text
+        Self {
+            content: vec![ContentBlock::Text {
+                text: value.to_string(),
+            }],
+            is_error: false,
+        }
+    }
 }
 
 /// Server status for display.
@@ -266,5 +344,108 @@ mod tests {
             !contradictory.is_read_only(),
             "destructiveHint:true must veto readOnlyHint"
         );
+    }
+
+    #[test]
+    fn parses_standard_mcp_image_and_camel_case() {
+        let value = serde_json::json!({
+            "content": [
+                {
+                    "type": "image",
+                    "data": "iVBORw0KGgoAAAANSUhEUgAA",
+                    "mimeType": "image/png"
+                },
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///test.txt",
+                        "mimeType": "text/plain",
+                        "text": "hello"
+                    }
+                }
+            ],
+            "isError": false
+        });
+
+        let parsed: CallToolResult = serde_json::from_value(value).unwrap();
+        assert!(!parsed.is_error);
+        assert_eq!(parsed.content.len(), 2);
+        match &parsed.content[0] {
+            ContentBlock::Image { data, mime_type } => {
+                assert_eq!(data, "iVBORw0KGgoAAAANSUhEUgAA");
+                assert_eq!(mime_type, "image/png");
+            }
+            _ => panic!("expected Image block"),
+        }
+        match &parsed.content[1] {
+            ContentBlock::Resource { resource } => {
+                assert_eq!(resource.uri, "file:///test.txt");
+                assert_eq!(resource.mime_type.as_deref(), Some("text/plain"));
+                assert_eq!(resource.text.as_deref(), Some("hello"));
+            }
+            _ => panic!("expected Resource block"),
+        }
+    }
+
+    #[test]
+    fn parses_is_error_camel_case() {
+        let value = serde_json::json!({
+            "content": [
+                { "type": "text", "text": "something failed" }
+            ],
+            "isError": true
+        });
+
+        let parsed: CallToolResult = serde_json::from_value(value).unwrap();
+        assert!(parsed.is_error);
+        assert_eq!(parsed.content.len(), 1);
+    }
+
+    #[test]
+    fn ignores_unknown_content_block_types() {
+        let value = serde_json::json!({
+            "content": [
+                { "type": "audio", "data": "base64audio" },
+                { "type": "text", "text": "sound played" }
+            ]
+        });
+
+        let parsed: CallToolResult = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.content.len(), 2);
+        assert!(matches!(parsed.content[0], ContentBlock::Unknown));
+        assert!(matches!(parsed.content[1], ContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn lenient_parser_handles_string_and_custom_objects() {
+        // Plain string
+        let res1 = CallToolResult::parse_lenient(serde_json::json!("plain string response"));
+        assert!(!res1.is_error);
+        assert_eq!(res1.content.len(), 1);
+        match &res1.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "plain string response"),
+            _ => panic!("expected text"),
+        }
+
+        // Custom object with content: string
+        let res2 = CallToolResult::parse_lenient(serde_json::json!({
+            "content": "single string content",
+            "isError": true
+        }));
+        assert!(res2.is_error);
+        match &res2.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "single string content"),
+            _ => panic!("expected text"),
+        }
+
+        // Custom object with text: string
+        let res3 = CallToolResult::parse_lenient(serde_json::json!({
+            "text": "text field value"
+        }));
+        assert!(!res3.is_error);
+        match &res3.content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "text field value"),
+            _ => panic!("expected text"),
+        }
     }
 }

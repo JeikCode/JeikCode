@@ -189,14 +189,14 @@ impl Tool for McpToolAdapter {
 
         match self
             .registry
-            .call_tool(&self.server, &self.tool, arguments)
+            .call_tool_with_images(&self.server, &self.tool, arguments)
             .await
         {
-            Ok(content) => ToolResult {
+            Ok((content, images)) => ToolResult {
                 call_id: String::new(),
                 content,
                 is_error: false,
-                images: vec![],
+                images,
             },
             Err(e) => ToolResult {
                 call_id: String::new(),

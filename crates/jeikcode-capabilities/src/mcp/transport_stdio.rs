@@ -846,7 +846,7 @@ impl McpClient for StdioClient {
         let result = self
             .send_request_with_reconnect("tools/call", Some(params), false)
             .await?;
-        serde_json::from_value(result).context("Failed to parse tools/call result")
+        Ok(CallToolResult::parse_lenient(result))
     }
 
     fn server_name(&self) -> &str {

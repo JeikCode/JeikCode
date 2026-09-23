@@ -1388,12 +1388,12 @@ impl McpRegistry {
             Instant::now().checked_sub(ago).or(Some(Instant::now()));
     }
 
-    pub async fn call_tool(
+    pub async fn call_tool_with_images(
         &self,
         server_name: &str,
         tool_name: &str,
         arguments: serde_json::Value,
-    ) -> Result<String> {
+    ) -> Result<(String, Vec<jeikcode_kernel::message::ImageContent>)> {
         // Increment in-flight under the same lock park_if_idle uses, so a reaper
         // cannot observe in_flight==0 then shut down a client this call already
         // intends to use. Released before ensure/connect so we cannot deadlock.
@@ -1441,21 +1441,82 @@ impl McpRegistry {
 
         let result = client.call_tool(tool_name, arguments).await?;
 
-        // Extract text from content blocks
-        let output = result
-            .content
-            .into_iter()
-            .filter_map(|c| match c {
-                super::types::ContentBlock::Text { text } => Some(text),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        // Extract text and image blocks
+        let mut chunks = Vec::new();
+        let mut images = Vec::new();
+
+        for c in result.content {
+            match c {
+                super::types::ContentBlock::Text { text } => {
+                    if !text.is_empty() {
+                        chunks.push(text);
+                    }
+                }
+                super::types::ContentBlock::Image { mime_type, data } => {
+                    let mime = if mime_type.is_empty() {
+                        "image/png".to_string()
+                    } else {
+                        mime_type
+                    };
+                    chunks.push(format!("[Image ({}): {} base64 characters]", mime, data.len()));
+                    images.push(jeikcode_kernel::message::ImageContent {
+                        media_type: mime,
+                        data,
+                    });
+                }
+                super::types::ContentBlock::Resource { resource } => {
+                    if let Some(text) = resource.text {
+                        chunks.push(text);
+                    } else if let Some(blob) = resource.blob {
+                        let mime = resource
+                            .mime_type
+                            .as_deref()
+                            .unwrap_or("application/octet-stream");
+                        chunks.push(format!(
+                            "[Resource ({}): {} (blob {} base64 characters)]",
+                            resource.uri,
+                            mime,
+                            blob.len()
+                        ));
+                    } else if !resource.uri.is_empty() {
+                        chunks.push(format!("[Resource: {}]", resource.uri));
+                    }
+                }
+                super::types::ContentBlock::Unknown => {}
+            }
+        }
+
+        let output = if chunks.is_empty() {
+            if result.is_error {
+                String::new()
+            } else if !images.is_empty() {
+                format!(
+                    "[{} image(s) captured and attached for vision model]",
+                    images.len()
+                )
+            } else {
+                "[Tool executed successfully with no text output]".to_string()
+            }
+        } else {
+            chunks.join("\n")
+        };
 
         if result.is_error {
             anyhow::bail!("MCP tool error: {}", output);
         }
 
+        Ok((output, images))
+    }
+
+    pub async fn call_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<String> {
+        let (output, _images) = self
+            .call_tool_with_images(server_name, tool_name, arguments)
+            .await?;
         Ok(output)
     }
 
@@ -1924,6 +1985,73 @@ mod tests {
 
         release.notify_one();
         assert_eq!(call.await.unwrap().unwrap(), "done");
+    }
+
+    struct ImageAndResourceClient;
+
+    #[async_trait::async_trait]
+    impl McpClient for ImageAndResourceClient {
+        async fn initialize(&mut self) -> Result<super::super::types::InitializeResult> {
+            anyhow::bail!("not used")
+        }
+
+        async fn list_tools(&self) -> Result<super::super::types::ListToolsResult> {
+            Ok(super::super::types::ListToolsResult { tools: Vec::new() })
+        }
+
+        async fn call_tool(
+            &self,
+            _tool_name: &str,
+            _arguments: serde_json::Value,
+        ) -> Result<super::super::types::CallToolResult> {
+            Ok(super::super::types::CallToolResult {
+                content: vec![
+                    super::super::types::ContentBlock::Image {
+                        data: "AAAA".to_string(),
+                        mime_type: "image/png".to_string(),
+                    },
+                    super::super::types::ContentBlock::Resource {
+                        resource: super::super::types::ResourceContent {
+                            uri: "file:///test.txt".to_string(),
+                            text: Some("resource content".to_string()),
+                            blob: None,
+                            mime_type: Some("text/plain".to_string()),
+                        },
+                    },
+                ],
+                is_error: false,
+            })
+        }
+
+        fn server_name(&self) -> &str {
+            "media"
+        }
+
+        fn status(&self) -> ServerStatus {
+            ServerStatus::Connected
+        }
+
+        async fn shutdown(&self) {}
+    }
+
+    #[tokio::test]
+    async fn call_tool_with_images_extracts_images_and_resource_text() {
+        let registry = Arc::new(McpRegistry::new());
+        registry.servers.write().await.insert(
+            "media".to_string(),
+            Arc::new(ImageAndResourceClient),
+        );
+
+        let (output, images) = registry
+            .call_tool_with_images("media", "snap", serde_json::json!({}))
+            .await
+            .unwrap();
+
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].media_type, "image/png");
+        assert_eq!(images[0].data, "AAAA");
+        assert!(output.contains("[Image (image/png): 4 base64 characters]"));
+        assert!(output.contains("resource content"));
     }
 
     /// SECURITY: an untrusted project's `.mcp.json` stdio server must never be

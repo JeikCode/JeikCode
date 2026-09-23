@@ -518,7 +518,7 @@ impl McpClient for HttpClient {
         });
 
         let result = self.send_request("tools/call", Some(params)).await?;
-        serde_json::from_value(result).context("Failed to parse tools/call result")
+        Ok(CallToolResult::parse_lenient(result))
     }
 
     fn server_name(&self) -> &str {
