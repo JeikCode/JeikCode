@@ -14,7 +14,7 @@ use grep::regex::{RegexMatcher, RegexMatcherBuilder};
 use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
 use jeikcode_kernel::tool::{Tool, ToolContext, ToolResult};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -75,10 +75,88 @@ struct Args {
     glob: Option<String>,
     #[serde(default, alias = "file_type")]
     r#type: Option<String>,
-    #[serde(default, alias = "i", alias = "ignore_case", alias = "-i")]
+    #[serde(
+        default,
+        alias = "i",
+        alias = "ignore_case",
+        alias = "-i",
+        deserialize_with = "lenient_bool"
+    )]
     case_insensitive: Option<bool>,
+    #[serde(default, alias = "regex", deserialize_with = "lenient_bool")]
+    is_regex: Option<bool>,
     #[serde(default)]
     output_mode: OutputMode,
+}
+
+fn lenient_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Visitor;
+
+    struct LenientBoolVisitor;
+
+    impl<'de> Visitor<'de> for LenientBoolVisitor {
+        type Value = Option<bool>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a boolean or string representation of a boolean")
+        }
+
+        fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v != 0))
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v != 0))
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match v.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Ok(Some(true)),
+                "false" | "0" | "no" | "off" => Ok(Some(false)),
+                _ => Ok(None),
+            }
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(LenientBoolVisitor)
+}
+
+/// 智能嗅探 pattern 是否包含明显的正则表达式复合语法特征
+/// 用于在默认字面量搜空时触发同轮静默重试，绝不将单个点号或标点误判为正则
+fn has_regex_indicators(p: &str) -> bool {
+    p.contains(".*")
+        || p.contains(".+")
+        || p.contains("\\d")
+        || p.contains("\\w")
+        || p.contains("\\s")
+        || p.contains("\\b")
+        || p.contains('|')
+        || p.contains("(?:")
+        || p.contains("(?i")
+        || p.contains("(?-i")
+        || (p.contains('^') && !p.contains("^^"))
+        || (p.contains('$') && !p.starts_with('$') && !p.contains("$$"))
+        || (p.contains('[')
+            && p.contains(']')
+            && (p.contains("0-9") || p.contains("a-z") || p.contains("A-Z")))
 }
 
 fn file_type_to_glob(t: &str) -> String {
@@ -124,7 +202,7 @@ impl Tool for GrepTool {
         "grep"
     }
     fn description(&self) -> &str {
-        "Search file contents using regex or exact text. Supports context lines, file type filters, and output modes (`content`, `files_with_matches`, or `count`). Use to locate occurrences and surrounding context of a string in a directory. Use `code_explore` when tracing call graphs or business flows."
+        "Search file contents using exact text (default) or regex (is_regex=true). Supports context lines, file type filters, and output modes (`content`, `files_with_matches`, or `count`). Defaults to exact literal matching so code symbols like '()' or '[]' are safe. Use `code_explore` when tracing call graphs or business flows."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         json!({
@@ -133,6 +211,10 @@ impl Tool for GrepTool {
                 "pattern": {
                     "type": "string",
                     "description": "Regex pattern or exact text to search for."
+                },
+                "is_regex": {
+                    "type": "boolean",
+                    "description": "Whether pattern is a regex. Defaults to false (exact literal text match, safely escapes '()', '[]', '{}', '.', etc.). Set true only when using regex syntax like '.*', '\\d+', or '|'."
                 },
                 "path": {
                     "type": "string",
@@ -265,30 +347,43 @@ impl Tool for GrepTool {
 
         // Defaults to case-insensitive for agent exploration unless explicitly forced via false.
         let is_case_insensitive = a.case_insensitive.unwrap_or(true);
-        let matcher = match RegexMatcherBuilder::new()
-            .case_insensitive(is_case_insensitive)
-            .build(&a.pattern)
-        {
-            Ok(m) => m,
-            Err(_) => match RegexMatcherBuilder::new()
+        let explicit_regex = a.is_regex.unwrap_or(false);
+
+        let initial_matcher = if explicit_regex {
+            match RegexMatcherBuilder::new()
+                .case_insensitive(is_case_insensitive)
+                .build(&a.pattern)
+            {
+                Ok(m) => m,
+                Err(_) => match RegexMatcherBuilder::new()
+                    .case_insensitive(is_case_insensitive)
+                    .build(&regex::escape(&a.pattern))
+                {
+                    Ok(m) => m,
+                    Err(e) => return err(format!("grep: invalid pattern '{}': {e}", a.pattern)),
+                },
+            }
+        } else {
+            match RegexMatcherBuilder::new()
                 .case_insensitive(is_case_insensitive)
                 .build(&regex::escape(&a.pattern))
             {
                 Ok(m) => m,
                 Err(e) => return err(format!("grep: invalid pattern '{}': {e}", a.pattern)),
-            },
+            }
         };
 
         let base = ctx.working_dir.clone();
         let pattern = a.pattern.clone();
+        let search_pattern = pattern.clone();
         let display_path = raw.clone();
         let search_secs = super::tool_timeouts().search_secs;
         let deadline = Instant::now() + Duration::from_secs(search_secs);
         let output_mode = a.output_mode;
         let res = tokio::task::spawn_blocking(move || {
-            search(
+            let mut result = search(
                 &root,
-                &matcher,
+                &initial_matcher,
                 max,
                 before_ctx,
                 after_ctx,
@@ -296,7 +391,37 @@ impl Tool for GrepTool {
                 &base,
                 glob_filter.as_ref(),
                 deadline,
-            )
+            );
+
+            // 零额外交互静默自愈：若默认字面量搜索 0 匹配，且检测到典型的复合正则符号特征，
+            // 自动用原始正则再试一次，若能救活则直接静默采用正则结果！
+            if result.0.is_empty()
+                && !explicit_regex
+                && has_regex_indicators(&search_pattern)
+                && Instant::now() < deadline
+            {
+                if let Ok(retry_matcher) = RegexMatcherBuilder::new()
+                    .case_insensitive(is_case_insensitive)
+                    .build(&search_pattern)
+                {
+                    let retry_res = search(
+                        &root,
+                        &retry_matcher,
+                        max,
+                        before_ctx,
+                        after_ctx,
+                        output_mode,
+                        &base,
+                        glob_filter.as_ref(),
+                        deadline,
+                    );
+                    if !retry_res.0.is_empty() {
+                        result = retry_res;
+                    }
+                }
+            }
+
+            result
         })
         .await;
         match res {
@@ -879,6 +1004,52 @@ mod tests {
             .await;
         assert!(!r.is_error, "{}", r.content);
         assert!(r.content.contains("a.txt:1:"), "{}", r.content);
+    }
+
+    #[tokio::test]
+    async fn code_symbols_with_parentheses_and_brackets_matched_by_default() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(
+            d.path().join("code.rs"),
+            "if status.is_success() {\n    let val = arr[0];\n}\n",
+        )
+        .unwrap();
+
+        // 1. 默认精确字面量：带圆括号的代码调用绝不被捕获组吞掉
+        let r1 = GrepTool
+            .execute(r#"{"pattern":"status.is_success()"}"#, &ctx(d.path()))
+            .await;
+        assert!(!r1.is_error, "{}", r1.content);
+        assert!(r1.content.contains("code.rs:1:"), "{}", r1.content);
+
+        // 2. 默认精确字面量：带方括号的数组索引绝不被字符集匹配误杀
+        let r2 = GrepTool
+            .execute(r#"{"pattern":"arr[0]"}"#, &ctx(d.path()))
+            .await;
+        assert!(!r2.is_error, "{}", r2.content);
+        assert!(r2.content.contains("code.rs:2:"), "{}", r2.content);
+    }
+
+    #[tokio::test]
+    async fn auto_fallback_to_regex_when_literal_misses() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("log.rs"), "let log_fatal_error = true;\n").unwrap();
+
+        // 未显式传 is_regex，但 pattern 包含明显的 .* 正则语法，字面量搜空后自动静默自愈
+        let r = GrepTool
+            .execute(r#"{"pattern":"log.*error"}"#, &ctx(d.path()))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert!(r.content.contains("log.rs:1:"), "{}", r.content);
+    }
+
+    #[tokio::test]
+    async fn lenient_bool_deserialization_test() {
+        let a: Args =
+            serde_json::from_str(r#"{"pattern":"x","is_regex":"true","case_insensitive":"false"}"#)
+                .expect("string booleans must deserialize smoothly");
+        assert_eq!(a.is_regex, Some(true));
+        assert_eq!(a.case_insensitive, Some(false));
     }
 
     #[tokio::test]

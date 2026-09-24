@@ -25,7 +25,8 @@ export function fenceOpen(line: string): FenceState | null {
     indent += 1;
     index += 1;
   }
-  if (indent > 3) return null;
+  // 容错列表项内的嵌套代码块（多级缩进常达到 4-8 空格）
+  if (indent > 8) return null;
 
   const marker = raw[index];
   if (marker !== '`' && marker !== '~') return null;
@@ -48,11 +49,51 @@ export function fenceClose(line: string, state: FenceState): boolean {
     indent += 1;
     index += 1;
   }
-  if (indent > 3) return false;
+  if (indent > 8) return false;
 
   let markerEnd = index;
   while (markerEnd < raw.length && raw[markerEnd] === state.marker) markerEnd += 1;
-  return markerEnd - index >= state.length && raw.slice(markerEnd).trim() === '';
+  const matchLen = markerEnd - index;
+  if (matchLen < 3) return false;
+
+  const rest = raw.slice(markerEnd).trim();
+  // 完美闭合：只有反引号（数量足够），无额外字符
+  if (matchLen >= state.length && rest === '') return true;
+  // 容错模型闭合时误写了语言后缀（如 ```rust ... ```rust）
+  if (matchLen >= state.length && /^[a-zA-Z0-9_-]+$/.test(rest)) return true;
+  return false;
+}
+
+/**
+ * 结构性终结判定：判断当前行是否为明确的外部顶层块级元素
+ * 当处于未闭合代码块内部时，若出现这些标记，说明模型遗漏了闭合 ```，必须强制自愈闭合上一个代码块
+ */
+export function isStructuralTerminator(line: string, currentFence: FenceState): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+
+  // 1. 明确的 ATX 标题（如 # 标题、#### 3. 标题）
+  if (/^#{1,6}\s+\S+/.test(trimmed)) {
+    return true;
+  }
+
+  // 2. 水平分割线（如 --- 或 *** 或 ___）
+  if (/^([-*_]\s*){3,}$/.test(trimmed)) {
+    return true;
+  }
+
+  // 3. 另一个新的代码块开启行（例如上一块漏闭合，直接开启新的 ```rust 或 ```python）
+  const opening = fenceOpen(line);
+  if (opening && (opening.marker !== currentFence.marker || trimmed.length > opening.length)) {
+    return true;
+  }
+
+  // 4. 常见的大段列表标头序号，例如 1. 2. 3. 且后面跟粗体标题
+  if (/^\d+\.\s+\*\*[^*]+\*\*：?/.test(trimmed) || /^[-*+]\s+\*\*[^*]+\*\*：?/.test(trimmed)) {
+    return true;
+  }
+
+  return false;
 }
 
 export function hasUnescapedPipe(line: string): boolean {
@@ -368,6 +409,13 @@ export function preprocessMarkdown(raw: string): string {
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
 
+    // ★ 智能解开模型误加的 4 空格缩进富文本块：
+    // 在非围栏代码块外，如果一行文本缩进了 4+ 个空格，但其内容明显是 Markdown 块级结构（如标题、水平线、新的围栏代码块、列表项），
+    // 将其多余的前置 4 空格缩进剥除，彻底避免 marked 误将其判定为 Indented Code Block 导致富文本降级为纯文本或灰色框！
+    if (!inFence && /^(?: {4}|\t)(?:#{1,6}\s+|[-*_]{3,}\s*$|(?:```|~~~)|[-*+]\s+|\d+\.\s+)/.test(line)) {
+      line = line.replace(/^(?: {4}|\t)/, '');
+    }
+
     if (inFence) {
       if (fenceClose(line, inFence)) {
         // 若代码块内最后一行以奇数个反斜杠 `\` 结尾（如 Windows 路径 C:\foo\），
@@ -384,9 +432,23 @@ export function preprocessMarkdown(raw: string): string {
           }
         }
         inFence = null;
+        result.push(line);
+        continue;
       }
-      result.push(line);
-      continue;
+
+      // ★ 结构性终结自愈：代码块内部若遇到明确的外部顶层块级元素
+      // （如标题 ^#{1,6}\s+、水平线 ^---+$、新的围栏代码块开启），
+      // 说明上一个代码块模型漏打了闭合 ```！
+      // 必须立刻在 result 中补上闭合围栏，强制终结代码块，并将本行正常放行到后续流程解析！
+      if (isStructuralTerminator(line, inFence)) {
+        const fence = inFence.marker.repeat(inFence.length);
+        result.push(fence);
+        inFence = null;
+        // 不 continue，让本行（标题/分割线/新代码块）正常流向下方的块级处理！
+      } else {
+        result.push(line);
+        continue;
+      }
     }
 
     const opening = fenceOpen(line);
@@ -442,9 +504,12 @@ export function preprocessMarkdown(raw: string): string {
     }
 
     const isHeading = /^\s*#{1,6}\s+/.test(line);
-    if (isHeading && result.length > 0) {
+    const openingNow = fenceOpen(line);
+    if ((isHeading || openingNow) && result.length > 0) {
       const prevLine = result[result.length - 1].trim();
-      if (prevLine !== '' && !prevLine.startsWith('#')) result.push('');
+      if (prevLine !== '' && !prevLine.startsWith('#')) {
+        result.push('');
+      }
     }
 
     const nextLine = i + 1 < lines.length ? lines[i + 1] : null;

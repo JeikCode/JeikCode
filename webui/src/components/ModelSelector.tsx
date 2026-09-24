@@ -375,7 +375,7 @@ export function ModelSelector({
                   const currentInputVal =
                     o.val && budgetInputs[o.val] !== undefined
                       ? budgetInputs[o.val]
-                      : o.defaultBudget;
+                      : ('defaultBudget' in o ? o.defaultBudget : undefined);
 
                   return (
                     <div

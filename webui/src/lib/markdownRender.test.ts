@@ -75,3 +75,39 @@ test('code fence inside list ending with backslash closes properly without swall
   assert.match(out, /<strong>二进制目录与文件<\/strong>/);
   assert.equal((out.match(/code-block-wrapper/g) ?? []).length, 2);
 });
+
+test('structural fence auto-close when closing fence is omitted before heading', () => {
+  // 模型输出了 ```rust 代码块，但是漏写了闭合的 ```，直接写了 #### 3. 标题
+  const brokenMd = [
+    '2. grok-build 分析',
+    '* 底层实现：',
+    '```rust',
+    'cmd.arg("-e").arg(&input.pattern);',
+    // 注意：这里漏掉了闭合 ```
+    '* 同样没有传 `-F`，没有做任何符号转义保护。',
+    '',
+    '#### 3. 相比之下，`jeikcode` 的防护其实已经领先了一步：',
+    '* `jeikcode` 写的智能回退逻辑：',
+    '```rust',
+    'let matcher = 1;',
+    '```',
+  ].join('\n');
+
+  const out = markdownToHtml(brokenMd);
+  // 结构性自愈生效：标题必须独立渲染为 h4，而不是被吞进代码块
+  assert.match(out, /<h4[^>]*>3\. 相比之下/);
+  // 必须有两个独立的代码块，而不是融为一个大块
+  assert.equal((out.match(/code-block-wrapper/g) ?? []).length, 2);
+});
+
+test('indented code blocks with nested markdown are unpacked and rendered as rich text', () => {
+  const md = [
+    '    * 同样没有传 `-F`，没有符号保护。',
+    '    ',
+    '    #### 标题内容',
+    '    * 列表条目',
+  ].join('\n');
+  const out = markdownToHtml(md);
+  assert.match(out, /<h4[^>]*>标题内容<\/h4>/);
+  assert.match(out, /<li>列表条目<\/li>/);
+});
