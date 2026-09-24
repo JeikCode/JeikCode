@@ -1,5 +1,5 @@
 {
-  "version": "v7.1.1",
+  "version": "v7.1.2",
   "released_at": "2026-09-24",
   "binaries": {
     "darwin-arm64": {
@@ -15,8 +15,8 @@
       "size": 53558384
     },
     "linux-x64": {
-      "sha256": "ac53ff6c5a65ece921c2b97455a48d5fc13a531e3150d38571beb0e9574d9edb",
-      "size": 58459112
+      "sha256": "a4079eddb7a3b122d2871038d178c236257af329f5318485f1a3ec4c62b7431a",
+      "size": 58385224
     },
     "windows-arm64": {
       "sha256": "c50957da02c0e5138c437023ed1ff95a4f513b53daf9331fdf129304319a0f25",
