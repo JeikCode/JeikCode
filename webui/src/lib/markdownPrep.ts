@@ -72,7 +72,7 @@ export function isStructuralTerminator(line: string, currentFence: FenceState): 
   const trimmed = line.trim();
   if (!trimmed) return false;
 
-  // 1. 明确的 ATX 标题（如 # 标题、#### 3. 标题）
+  // 1. 明确的 ATX 标题（如 # 标题、#### 2. 标题、#### 3. 标题）
   if (/^#{1,6}\s+\S+/.test(trimmed)) {
     return true;
   }
@@ -88,8 +88,8 @@ export function isStructuralTerminator(line: string, currentFence: FenceState): 
     return true;
   }
 
-  // 4. 常见的大段列表标头序号，例如 1. 2. 3. 且后面跟粗体标题
-  if (/^\d+\.\s+\*\*[^*]+\*\*：?/.test(trimmed) || /^[-*+]\s+\*\*[^*]+\*\*：?/.test(trimmed)) {
+  // 4. 常见的大段标头序号，例如 1. 2. 3. 或带粗体的列表项
+  if (/^\d+\.\s+\S+/.test(trimmed) || /^[-*+]\s+\*\*[^*]+\*\*：?/.test(trimmed)) {
     return true;
   }
 
@@ -431,8 +431,11 @@ export function preprocessMarkdown(raw: string): string {
             result[result.length - 1] = prev + ' ';
           }
         }
+        // ★ 核心修复：闭合围栏必须规范化为顶格纯净闭合标记，消除前置 4+ 空格缩进！
+        // 杜绝 CommonMark 规范因缩进 >= 4 空格而拒绝将其当成闭合标记，导致代码块持续吞噬正文！
+        const cleanClose = inFence.marker.repeat(inFence.length);
         inFence = null;
-        result.push(line);
+        result.push(cleanClose);
         continue;
       }
 
@@ -457,7 +460,10 @@ export function preprocessMarkdown(raw: string): string {
         if (!prevBlank()) result.push('');
         inTable = false;
       }
-      result.push(line);
+      // 开启围栏也规范化消除多余的前置缩进，确保 marked 100% 识别
+      const markerIdx = line.indexOf(opening.marker);
+      const cleanOpen = `${opening.marker.repeat(opening.length)}${line.slice(markerIdx + opening.length)}`;
+      result.push(cleanOpen);
       inFence = opening;
       continue;
     }
