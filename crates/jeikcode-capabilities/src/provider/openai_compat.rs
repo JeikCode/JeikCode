@@ -1079,12 +1079,15 @@ fn build_request_body(
     // automatically expand max_tokens so upstream gateways (e.g. Anthropic-backed) won't 400
     // on `max_tokens must be greater than budget_tokens`.
     if let Some(budget) = effective_budget {
-        if budget > 0 {
-            if let Some(mt) = max_tokens {
-                if mt <= budget {
-                    max_tokens = Some(budget + 8192);
-                }
+        if let Some(mt) = max_tokens {
+            if budget >= mt {
+                max_tokens = Some(
+                    (budget + 8192).min(cfg.context_window.saturating_sub(1024).max(budget + 1)),
+                );
             }
+        } else {
+            max_tokens =
+                Some((budget + 8192).min(cfg.context_window.saturating_sub(1024).max(budget + 1)));
         }
     }
 

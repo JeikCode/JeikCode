@@ -90,12 +90,23 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
                 let mut rc = ResponsesConfig::new(&cfg.api_key, &cfg.base_url, &cfg.model);
                 rc.context_window = cfg.context_window;
                 rc.idle_timeout = cfg.stream_timeout;
-                rc.max_tokens = cfg.chat_options.max_tokens;
+                rc.max_tokens = Some(cfg.chat_options.max_tokens.unwrap_or(65536));
                 rc.supports_vision = cfg.supports_vision;
                 rc.reasoning_model = cfg.reasoning_model;
                 rc.reasoning_policy =
                     ReasoningPolicy::from_config(cfg.reasoning_history.as_deref())
                         .map_err(ProviderBuildError::Adapter)?;
+                rc.thinking_budget = cfg.thinking_budget;
+                rc.thinking_type = cfg.thinking_type.clone();
+                rc.thinking_enabled = cfg.thinking_enabled;
+                if cfg.chat_options.reasoning_effort.as_ref().is_some_and(|e| {
+                    matches!(e, jeikcode_kernel::provider::ReasoningEffort::Off)
+                        || e.as_str().eq_ignore_ascii_case("off")
+                        || e.as_str().eq_ignore_ascii_case("none")
+                }) {
+                    rc.thinking_enabled = Some(false);
+                    rc.thinking_type = Some("disabled".to_string());
+                }
                 rc.user_agent = Some(ua.clone());
                 rc.skip_tls_verify = cfg.skip_tls_verify;
                 if let Some(authenticator) = &self.authenticator {
@@ -110,10 +121,7 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
                 let mut ac = AnthropicConfig::new(&cfg.api_key, &cfg.base_url, &cfg.model);
                 ac.context_window = cfg.context_window;
                 ac.idle_timeout = cfg.stream_timeout;
-                ac.max_tokens = cfg
-                    .chat_options
-                    .max_tokens
-                    .unwrap_or_else(|| default_max_tokens(cfg.context_window));
+                ac.max_tokens = cfg.chat_options.max_tokens.unwrap_or(65536);
                 ac.thinking_enabled = cfg.thinking_enabled;
                 ac.thinking = cfg
                     .thinking_enabled
@@ -145,7 +153,7 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
                 oc.api_key = cfg.api_key.clone();
                 oc.context_window = cfg.context_window;
                 oc.idle_timeout = cfg.stream_timeout;
-                oc.max_tokens = cfg.chat_options.max_tokens;
+                oc.max_tokens = Some(cfg.chat_options.max_tokens.unwrap_or(65536));
                 oc.think = cfg
                     .thinking_enabled
                     .unwrap_or_else(|| cfg.reasoning_model.unwrap_or(false));
@@ -159,7 +167,7 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
                 let mut gc = GeminiConfig::new(&cfg.api_key, &cfg.base_url, &cfg.model);
                 gc.context_window = cfg.context_window;
                 gc.idle_timeout = cfg.stream_timeout;
-                gc.max_tokens = cfg.chat_options.max_tokens;
+                gc.max_tokens = Some(cfg.chat_options.max_tokens.unwrap_or(65536));
                 gc.thinking_enabled = cfg.thinking_enabled;
                 if cfg.chat_options.reasoning_effort.as_ref().is_some_and(|e| {
                     matches!(e, jeikcode_kernel::provider::ReasoningEffort::Off)
@@ -187,7 +195,7 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
                 // Config/protocol flag — not a model-name whitelist. OpenAI
                 // and Anthropic wire formats accept base64 when this is true.
                 pc.supports_vision = cfg.supports_vision;
-                pc.max_tokens = cfg.chat_options.max_tokens;
+                pc.max_tokens = Some(cfg.chat_options.max_tokens.unwrap_or(65536));
                 pc.reasoning_model = cfg.reasoning_model;
                 pc.reasoning_policy =
                     ReasoningPolicy::from_config(cfg.reasoning_history.as_deref())

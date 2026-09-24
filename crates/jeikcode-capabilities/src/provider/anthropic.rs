@@ -596,8 +596,9 @@ fn build_request_body(
                 let has_explicit_budget_request =
                     cfg.thinking_budget.is_some() || options.reasoning_effort.is_some();
                 if budget > 0 {
-                    if has_explicit_budget_request && options.max_tokens.is_none() && max_tokens <= budget {
-                        let expanded = (budget + 8192).min(cfg.context_window.saturating_sub(1024).max(budget + 1));
+                    if has_explicit_budget_request && budget >= max_tokens {
+                        let expanded = (budget + 8192)
+                            .min(cfg.context_window.saturating_sub(1024).max(budget + 1));
                         max_tokens = max_tokens.max(expanded);
                     }
                     if max_tokens > 1 && budget >= max_tokens {

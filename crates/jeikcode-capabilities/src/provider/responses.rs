@@ -18,12 +18,12 @@ use super::reasoning::ReasoningPolicy;
 use super::retry::{self, RetryPolicy};
 use super::sign::RequestSigner;
 use async_trait::async_trait;
-use jeikcode_kernel::message::{Message, Role};
-use jeikcode_kernel::provider::{ChatOptions, LlmProvider, ToolChoice};
-use jeikcode_kernel::stream::{ProviderError, StreamEvent, TokenUsage};
-use jeikcode_kernel::tool::{ToolCall, ToolDef};
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use jeikcode_kernel::message::{Message, Role};
+use jeikcode_kernel::provider::{ChatOptions, LlmProvider, ReasoningEffort, ToolChoice};
+use jeikcode_kernel::stream::{ProviderError, StreamEvent, TokenUsage};
+use jeikcode_kernel::tool::{ToolCall, ToolDef};
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
@@ -52,6 +52,12 @@ pub struct ResponsesConfig {
     /// Override for [`ReasoningPolicy`] from `reasoning_history = include|exclude`.
     /// `None` ⇒ derive from `reasoning_model` then model name / base URL.
     pub reasoning_policy: Option<ReasoningPolicy>,
+    /// Thinking budget in tokens. When present, passed in `reasoning.max_tokens`.
+    pub thinking_budget: Option<u32>,
+    /// Thinking type override (e.g. "enabled", "disabled", "adaptive").
+    pub thinking_type: Option<String>,
+    /// Explicit thinking enabled switch.
+    pub thinking_enabled: Option<bool>,
 }
 
 impl ResponsesConfig {
@@ -76,6 +82,9 @@ impl ResponsesConfig {
             supports_vision: false,
             reasoning_model: None,
             reasoning_policy: None,
+            thinking_budget: None,
+            thinking_type: None,
+            thinking_enabled: None,
         }
     }
 }
@@ -349,20 +358,57 @@ fn build_request_body(
     if !session_id.is_empty() {
         body.insert("prompt_cache_key".into(), json!(session_id));
     }
-    if let Some(max) = options.max_tokens.or(cfg.max_tokens) {
-        body.insert("max_output_tokens".into(), json!(max));
+    let is_effort_off = options.reasoning_effort.as_ref().is_some_and(|e| {
+        matches!(e, ReasoningEffort::Off)
+            || e.as_str().eq_ignore_ascii_case("off")
+            || e.as_str().eq_ignore_ascii_case("none")
+    }) || cfg.thinking_enabled == Some(false)
+        || cfg.thinking_type.as_deref() == Some("disabled");
+
+    let effective_budget = if is_effort_off {
+        None
+    } else {
+        cfg.thinking_budget
+    };
+
+    let mut max_output_tokens = options.max_tokens.or(cfg.max_tokens).unwrap_or(65536);
+    // 当思考预算大于等于最大输出时，保留扩充
+    if let Some(budget) = effective_budget {
+        if budget >= max_output_tokens {
+            max_output_tokens =
+                (budget + 8192).min(cfg.context_window.saturating_sub(1024).max(budget + 1));
+        }
     }
+    body.insert("max_output_tokens".into(), json!(max_output_tokens));
+
     // Per-model custom thinking level (`reasoning.effort`). Independent of
     // whether we also ask for encrypted_content replay (`include`).
-    let wire_effort = resolve_wire_effort(model, options);
+    let wire_effort = if is_effort_off {
+        Some("none".to_string())
+    } else {
+        resolve_wire_effort(model, options)
+    };
+
+    let mut reasoning_obj = Map::new();
     if let Some(effort) = &wire_effort {
-        body.insert("reasoning".into(), json!({ "effort": effort }));
+        reasoning_obj.insert("effort".into(), json!(effort));
     }
+    if let Some(budget) = effective_budget {
+        if budget > 0 {
+            reasoning_obj.insert("max_tokens".into(), json!(budget));
+        }
+    }
+    if !reasoning_obj.is_empty() {
+        body.insert("reasoning".into(), Value::Object(reasoning_obj));
+    }
+
     // Reasoning models (and gateways that inject `reasoning.effort`) reject
     // sampling params. Omit temperature whenever effort rides the wire, or the
     // model is marked as a reasoner — otherwise short auxiliary calls (session
     // title) 400 before any TextDelta arrives.
-    let omit_temperature = wire_effort.is_some() || cfg.reasoning_model == Some(true);
+    let omit_temperature = wire_effort.as_deref().is_some_and(|e| e != "none")
+        || cfg.reasoning_model == Some(true)
+        || effective_budget.is_some_and(|b| b > 0);
     if let Some(t) = options.temperature {
         if !omit_temperature {
             body.insert("temperature".into(), json!(t));
@@ -1121,5 +1167,84 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::TextDelta(s) if s == "Session title")),
             "response.completed output[] must yield TextDelta when deltas were skipped; got {evs:?}"
         );
+    }
+
+    #[test]
+    fn body_includes_thinking_budget_and_model_max_output_tokens() {
+        let mut cfg = ResponsesConfig::new("k", "https://api.openai.com/v1", "gpt-5");
+        cfg.thinking_budget = Some(16384);
+        cfg.max_tokens = Some(65536); // Explicit model max tokens
+
+        let body = build_request_body(
+            "gpt-5",
+            &[Message::user("hi")],
+            &[],
+            &ChatOptions {
+                reasoning_effort: Some(ReasoningEffort::High),
+                ..Default::default()
+            },
+            &cfg,
+            ReasoningPolicy::Include,
+            "sess-1",
+        );
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["reasoning"]["max_tokens"], 16384);
+        // directly outputs model's configured max tokens, no auto expansion
+        assert_eq!(body["max_output_tokens"].as_u64(), Some(65536));
+        assert!(body.get("temperature").is_none());
+
+        // When max_tokens is unset, defaults to 65536
+        cfg.max_tokens = None;
+        let body_default = build_request_body(
+            "gpt-5",
+            &[Message::user("hi")],
+            &[],
+            &ChatOptions::default(),
+            &cfg,
+            ReasoningPolicy::Include,
+            "sess-1",
+        );
+        assert_eq!(body_default["max_output_tokens"].as_u64(), Some(65536));
+
+        // When budget >= max_tokens, preserve expansion (8192 <= 16384 -> 16384 + 8192 = 24576)
+        cfg.max_tokens = Some(8192);
+        let body_expanded = build_request_body(
+            "gpt-5",
+            &[Message::user("hi")],
+            &[],
+            &ChatOptions {
+                reasoning_effort: Some(ReasoningEffort::High),
+                ..Default::default()
+            },
+            &cfg,
+            ReasoningPolicy::Include,
+            "sess-1",
+        );
+        assert_eq!(body_expanded["max_output_tokens"].as_u64(), Some(24576));
+    }
+
+    #[test]
+    fn body_suppresses_budget_when_effort_off() {
+        let mut cfg = ResponsesConfig::new("k", "https://api.openai.com/v1", "gpt-5");
+        cfg.thinking_budget = Some(16384);
+        cfg.max_tokens = Some(8192);
+
+        let body = build_request_body(
+            "gpt-5",
+            &[Message::user("hi")],
+            &[],
+            &ChatOptions {
+                reasoning_effort: Some(ReasoningEffort::Off),
+                temperature: Some(0.7),
+                ..Default::default()
+            },
+            &cfg,
+            ReasoningPolicy::Include,
+            "sess-1",
+        );
+        assert_eq!(body["reasoning"]["effort"], "none");
+        assert!(body["reasoning"].get("max_tokens").is_none());
+        assert_eq!(body["max_output_tokens"].as_u64(), Some(8192));
+        assert!((body["temperature"].as_f64().unwrap() - 0.7).abs() < 1e-4);
     }
 }

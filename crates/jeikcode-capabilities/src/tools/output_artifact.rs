@@ -189,17 +189,42 @@ impl jeikcode_kernel::middleware::ToolMiddleware for ArtifactMiddleware {
         if tool.is_some_and(|t| t.never_truncate_result())
             || in_whitelist
             || self.threshold_bytes == 0
-            || total <= self.threshold_bytes
         {
             return jeikcode_kernel::middleware::AfterOutcome::Proceed;
         }
+
+        let is_failure = is_failure_outcome(result);
+
+        // Pre-spill original content to artifact store so streamlining and folding
+        // can reference the exact artifact ID and guarantee 100% lossless recall.
+        let artifact_id = if total > 1024 && total <= MAX_ARTIFACT_BYTES {
+            self.store.put(result.content.as_bytes()).ok()
+        } else {
+            None
+        };
+
+        // 1. Semantic streamlining: fold giant assertion diffs & compile warnings.
+        let streamlined = super::output_sanitizer::streamline_tool_output(
+            &result.content,
+            is_failure,
+            artifact_id.as_deref(),
+        );
+
+        if streamlined.len() < result.content.len() {
+            result.content = streamlined;
+        }
+
+        let new_total = result.content.len();
+        if new_total <= self.threshold_bytes {
+            return jeikcode_kernel::middleware::AfterOutcome::Proceed;
+        }
+
         // Adaptive dual-state folding:
         // - Success state (exit 0): aggressive compact preview (keeps ~3KB summary, eliding 95%+ redundant compiler roll).
-        // - Failure state (exit != 0): 20/80 tail-biased diagnostic focus (keeps generous tail for error trace & line numbers).
-        let is_failure = is_failure_outcome(result);
+        // - Failure state (exit != 0): bounded diagnostic focus (keeps up to 16KB for error trace & line numbers).
         let (head_budget, tail_budget, status_label) = if is_failure {
-            let total_budget = self.threshold_bytes.clamp(16 * 1024, 64 * 1024);
-            let head_part = (total_budget / 5).clamp(2 * 1024, 8 * 1024);
+            let total_budget = self.threshold_bytes.clamp(8 * 1024, 16 * 1024);
+            let head_part = (total_budget / 4).clamp(2 * 1024, 4 * 1024);
             let tail_part = total_budget.saturating_sub(head_part);
             (head_part, tail_part, "failure diagnostics focused")
         } else {
@@ -211,10 +236,10 @@ impl jeikcode_kernel::middleware::ToolMiddleware for ArtifactMiddleware {
         let head = &result.content[..head_end];
         let tail = &result.content[tail_begin..];
 
-        if total > MAX_ARTIFACT_BYTES {
+        if new_total > MAX_ARTIFACT_BYTES {
             // Too large to store; inline-truncate only.
             let marker = format!(
-                "\n\n[jeikcode: output truncated ({status_label}) — {total} bytes total, showing first {} + last {} bytes. \
+                "\n\n[jeikcode: output truncated ({status_label}) — {new_total} bytes total, showing first {} + last {} bytes. \
 Full output unavailable (exceeds {MAX_ARTIFACT_BYTES}-byte artifact ceiling).]\n\n",
                 head.len(),
                 tail.len()
@@ -223,15 +248,15 @@ Full output unavailable (exceeds {MAX_ARTIFACT_BYTES}-byte artifact ceiling).]\n
             return jeikcode_kernel::middleware::AfterOutcome::Proceed;
         }
 
-        let marker = match self.store.put(result.content.as_bytes()) {
-            Ok(id) => format!(
-                "\n\n[jeikcode: output truncated ({status_label}) — {total} bytes total, showing first {} + last {} bytes. \
+        let marker = match artifact_id.or_else(|| self.store.put(result.content.as_bytes()).ok()) {
+            Some(id) => format!(
+                "\n\n[jeikcode: output truncated ({status_label}) — {new_total} bytes total, showing first {} + last {} bytes. \
 Full output saved as artifact {id}. To read more: fetch_output(artifact_id=\"{id}\", offset, limit).]\n\n",
                 head.len(),
                 tail.len()
             ),
-            Err(_) => format!(
-                "\n\n[jeikcode: output truncated ({status_label}) — {total} bytes total, showing first {} + last {} bytes. \
+            None => format!(
+                "\n\n[jeikcode: output truncated ({status_label}) — {new_total} bytes total, showing first {} + last {} bytes. \
 Full output unavailable (could not be saved).]\n\n",
                 head.len(),
                 tail.len()

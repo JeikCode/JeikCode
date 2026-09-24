@@ -397,14 +397,22 @@ fn thinking_is_on(cfg: &GeminiConfig, options: &ChatOptions) -> bool {
     if cfg.thinking_enabled == Some(false) {
         return false;
     }
+    if cfg.thinking_budget == Some(0) {
+        return false;
+    }
     if options.reasoning_effort.as_ref().is_some_and(|e| {
         matches!(e, ReasoningEffort::Off)
             || e.as_str().eq_ignore_ascii_case("off")
             || e.as_str().eq_ignore_ascii_case("none")
+            || e.as_str().eq_ignore_ascii_case("disabled")
+            || e.as_str() == "0"
     }) {
         return false;
     }
     if cfg.thinking_enabled == Some(true) {
+        return true;
+    }
+    if cfg.thinking_budget.is_some_and(|b| b > 0) {
         return true;
     }
     if cfg.reasoning_model == Some(false) && options.reasoning_effort.is_none() {
@@ -416,18 +424,18 @@ fn thinking_is_on(cfg: &GeminiConfig, options: &ChatOptions) -> bool {
     model_supports_thinking(&cfg.model)
 }
 
-fn thinking_level_for(effort: &ReasoningEffort) -> &'static str {
+fn thinking_level_for(effort: &ReasoningEffort) -> String {
     match effort {
-        ReasoningEffort::Off => "MINIMAL",
-        ReasoningEffort::Low => "LOW",
-        ReasoningEffort::Medium => "MEDIUM",
-        ReasoningEffort::High | ReasoningEffort::Max | ReasoningEffort::XHigh => "HIGH",
+        ReasoningEffort::Off => "OFF".to_string(),
+        ReasoningEffort::Low => "LOW".to_string(),
+        ReasoningEffort::Medium => "MEDIUM".to_string(),
+        ReasoningEffort::High | ReasoningEffort::Max | ReasoningEffort::XHigh => "HIGH".to_string(),
         ReasoningEffort::Custom(s) => match s.to_ascii_uppercase().as_str() {
-            "MINIMAL" | "OFF" | "NONE" => "MINIMAL",
-            "LOW" => "LOW",
-            "MEDIUM" => "MEDIUM",
-            "HIGH" | "MAX" | "XHIGH" => "HIGH",
-            _ => "HIGH",
+            "MINIMAL" => "MINIMAL".to_string(),
+            "LOW" => "LOW".to_string(),
+            "MEDIUM" => "MEDIUM".to_string(),
+            "HIGH" | "MAX" | "XHIGH" => "HIGH".to_string(),
+            _ => s.to_ascii_uppercase(),
         },
     }
 }
@@ -449,30 +457,35 @@ fn thinking_budget_for(cfg: &GeminiConfig, options: &ChatOptions) -> u32 {
 pub(crate) fn thinking_config_value(cfg: &GeminiConfig, options: &ChatOptions) -> Value {
     let mut obj = Map::new();
     if !thinking_is_on(cfg, options) {
+        obj.insert("thinkingBudget".into(), json!(0));
         obj.insert("includeThoughts".into(), json!(false));
-        if uses_thinking_level(&cfg.model) {
-            obj.insert("thinkingLevel".into(), json!("MINIMAL"));
-        } else {
-            obj.insert("thinkingBudget".into(), json!(0));
-        }
         return Value::Object(obj);
     }
     obj.insert("includeThoughts".into(), json!(true));
     if uses_thinking_level(&cfg.model) {
-        let level = options
-            .reasoning_effort
-            .as_ref()
-            .map(thinking_level_for)
-            .unwrap_or("HIGH");
-        obj.insert("thinkingLevel".into(), json!(level));
+        if let Some(effort) = &options.reasoning_effort {
+            obj.insert("thinkingLevel".into(), json!(thinking_level_for(effort)));
+        } else if cfg.thinking_budget.is_none() {
+            obj.insert("thinkingLevel".into(), json!("HIGH"));
+        }
         if let Some(budget) = cfg.thinking_budget {
             obj.insert("thinkingBudget".into(), json!(budget));
         }
     } else {
-        obj.insert(
-            "thinkingBudget".into(),
-            json!(thinking_budget_for(cfg, options)),
-        );
+        if let Some(budget) = cfg.thinking_budget {
+            obj.insert("thinkingBudget".into(), json!(budget));
+        } else {
+            obj.insert(
+                "thinkingBudget".into(),
+                json!(thinking_budget_for(cfg, options)),
+            );
+        }
+        if let Some(effort) = &options.reasoning_effort {
+            let level = thinking_level_for(effort);
+            if level != "OFF" {
+                obj.insert("thinkingLevel".into(), json!(level));
+            }
+        }
     }
     Value::Object(obj)
 }
@@ -496,9 +509,25 @@ fn build_request_body(
         body.insert("systemInstruction".into(), json!({ "parts": parts }));
     }
     let mut gen = Map::new();
-    if let Some(mt) = options.max_tokens.or(cfg.max_tokens) {
-        gen.insert("maxOutputTokens".into(), json!(mt));
+    let mut max_tokens = options.max_tokens.or(cfg.max_tokens).unwrap_or(65536);
+    let effective_budget = if !thinking_is_on(cfg, options) {
+        None
+    } else {
+        cfg.thinking_budget.or_else(|| {
+            if !uses_thinking_level(&cfg.model) {
+                Some(thinking_budget_for(cfg, options))
+            } else {
+                None
+            }
+        })
+    };
+    if let Some(budget) = effective_budget {
+        if budget >= max_tokens {
+            max_tokens =
+                (budget + 8192).min(cfg.context_window.saturating_sub(1024).max(budget + 1));
+        }
     }
+    gen.insert("maxOutputTokens".into(), json!(max_tokens));
     if let Some(t) = options.temperature {
         gen.insert("temperature".into(), json!(t));
     }
@@ -958,12 +987,13 @@ mod tests {
     }
 
     #[test]
-    fn thinking_off_sends_minimal_on_gemini_3() {
+    fn thinking_off_sends_budget_zero_on_gemini_3() {
         let mut c = cfg("gemini-3.1-pro");
         c.thinking_enabled = Some(false);
         let v = thinking_config_value(&c, &ChatOptions::default());
-        assert_eq!(v["thinkingLevel"], json!("MINIMAL"));
+        assert_eq!(v["thinkingBudget"], json!(0));
         assert_eq!(v["includeThoughts"], json!(false));
+        assert!(v.get("thinkingLevel").is_none());
     }
 
     #[test]
@@ -982,8 +1012,35 @@ mod tests {
         let mut opts = ChatOptions::default();
         opts.reasoning_effort = Some(ReasoningEffort::High);
         let v = thinking_config_value(&c, &opts);
-        assert_eq!(v["thinkingBudget"], json!(8192));
+        assert_eq!(v["thinkingBudget"], json!(16384));
         assert_eq!(v["includeThoughts"], json!(true));
+
+        // Test maxOutputTokens default 65536 and expansion when budget >= max_tokens
+        let body_default = build_request_body(
+            &c,
+            &[Message::user("hi")],
+            &[],
+            &opts,
+            ReasoningPolicy::Include,
+        );
+        assert_eq!(
+            body_default["generationConfig"]["maxOutputTokens"],
+            json!(65536)
+        );
+
+        // Explicit small max_tokens < budget (8192 <= 16384) -> expands to 24576
+        opts.max_tokens = Some(8192);
+        let body_expanded = build_request_body(
+            &c,
+            &[Message::user("hi")],
+            &[],
+            &opts,
+            ReasoningPolicy::Include,
+        );
+        assert_eq!(
+            body_expanded["generationConfig"]["maxOutputTokens"],
+            json!(24576)
+        );
     }
 
     #[test]

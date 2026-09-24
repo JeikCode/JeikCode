@@ -55,6 +55,7 @@ pub mod list;
 mod memory;
 pub mod open_file;
 pub mod output_artifact;
+pub mod output_sanitizer;
 pub mod parallel_edit;
 pub mod read;
 pub mod repair;

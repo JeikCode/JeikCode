@@ -19,7 +19,7 @@
     <a href="#七多项目知识库配置">知识包体系</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-7.1.4-blue.svg" alt="version">
+    <img src="https://img.shields.io/badge/version-7.1.7-blue.svg" alt="version">
     <img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="rust">
     <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="license">
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20HarmonyOS-lightgrey.svg" alt="platform">
@@ -32,7 +32,7 @@
       <img src="https://img.shields.io/badge/GitHub_Repository-JeikCode%2FJeikCode-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub 官方仓库" />
     </a>
     <a href="https://github.com/JeikCode/JeikCode/releases" target="_blank">
-      <img src="https://img.shields.io/badge/Releases-v7.1.4-00f2fe?style=for-the-badge&logo=github&logoColor=black" alt="发布版本" />
+      <img src="https://img.shields.io/badge/Releases-v7.1.7-00f2fe?style=for-the-badge&logo=github&logoColor=black" alt="发布版本" />
     </a>
   </p>
   <p>
