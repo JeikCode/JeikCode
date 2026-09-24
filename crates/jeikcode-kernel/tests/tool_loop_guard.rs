@@ -1082,12 +1082,7 @@ impl Tool for TransitionProbeTool {
         false
     }
     async fn execute(&self, _args: &str, _ctx: &ToolContext) -> ToolResult {
-        let (content, is_error) = self
-            .results
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or_default();
+        let (content, is_error) = self.results.lock().unwrap().pop_front().unwrap_or_default();
         ToolResult {
             call_id: String::new(),
             content,
@@ -1148,7 +1143,10 @@ async fn soft_intercept_with_normal_status_and_different_content_does_not_nudge_
     let calls = provider.calls();
     let probe = Arc::new(TransitionProbeTool {
         results: Mutex::new(VecDeque::from(vec![
-            ("Action intercepted: please call again to proceed".into(), false),
+            (
+                "Action intercepted: please call again to proceed".into(),
+                false,
+            ),
             ("Action executed successfully".into(), false),
         ])),
     });
@@ -1212,4 +1210,3 @@ async fn exact_identical_calls_with_identical_output_triggers_repeat_nudge() {
         history
     );
 }
-

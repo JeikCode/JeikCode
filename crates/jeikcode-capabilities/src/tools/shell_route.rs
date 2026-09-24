@@ -90,6 +90,13 @@ pub(crate) fn soft_hint_for_unrouted_builtin_equivalent(command: &str) -> Option
         // Caller should have routed; no soft hint needed on the shell path.
         return None;
     }
+    // Pipeline & compound exemption: When an agent uses a pipeline (`|`) or chained commands
+    // (`&&`, `||`), it is legitimately using the shell's composition capabilities (e.g. `ls | grep`),
+    // not merely duplicating a dedicated tool. Do not inject distracting warning notices in this case.
+    let cmd = normalize_shell_for_route(command);
+    if cmd.contains('|') || cmd.contains("&&") || cmd.contains("||") {
+        return None;
+    }
     if looks_like_builtin_file_op(command) {
         Some(SOFT_HINT)
     } else {
@@ -867,13 +874,17 @@ mod tests {
     }
 
     #[test]
-    fn compound_ls_grep_gets_soft_hint_not_full_route() {
-        let cmd = r#"ls -la *.py *.js 2>/dev/null; echo "===="; grep -n "def \|class \|import " jxtx_login.py jxtx_crypto.py login_jxtx.py login_component.js 2>&1 | head -80"#;
-        // First segment is multi-glob ls → cannot fully route; soft hint must fire.
-        assert!(try_route_shell_command(cmd).is_none());
-        assert!(looks_like_builtin_file_op(cmd));
+    fn compound_pipeline_exempts_soft_hint_while_unrouted_single_gets_hint() {
+        let compound = r#"ls -la *.py *.js 2>/dev/null | grep -n "def \|class \|import " | head -80"#;
+        // Compound pipeline legitimately uses shell composition; soft hint is exempt.
+        assert!(try_route_shell_command(compound).is_none());
+        assert_eq!(soft_hint_for_unrouted_builtin_equivalent(compound), None);
+
+        // A single standalone command that is too complex to auto-rewrite gets the soft hint.
+        let single_complex_cat = "cat file1.txt file2.txt";
+        assert!(try_route_shell_command(single_complex_cat).is_none());
         assert_eq!(
-            soft_hint_for_unrouted_builtin_equivalent(cmd),
+            soft_hint_for_unrouted_builtin_equivalent(single_complex_cat),
             Some(SOFT_HINT)
         );
     }

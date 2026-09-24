@@ -320,9 +320,9 @@ fn spawn_agent(
 // --- agent-layer visible retry (second tier above the transport retry) ---
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use jeikcode_kernel::provider::ChatOptions;
 use jeikcode_kernel::tool::ToolDef;
-use futures::stream::BoxStream;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A provider whose open FAILS the first `fail_first` times (returning a clone of

@@ -17,11 +17,12 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** Build HTML clipboard payload: data-URL image + plain text (for insecure HTTP). */
-export function buildCopyHtml(dataUrl: string, text: string): string {
-  const img = `<img src="${dataUrl}">`;
-  if (!text) return img;
-  return `${img}<br>${escapeHtml(text).replace(/\r\n|\r|\n/g, '<br>')}`;
+/** Build HTML clipboard payload: data-URL images + plain text (for insecure HTTP and rich copy). */
+export function buildCopyHtml(dataUrls: string | string[], text: string): string {
+  const urls = Array.isArray(dataUrls) ? dataUrls : [dataUrls];
+  const imgs = urls.map((u) => `<img src="${u}">`).join('<br>');
+  if (!text) return imgs;
+  return `${imgs}<br>${escapeHtml(text).replace(/\r\n|\r|\n/g, '<br>')}`;
 }
 
 function extForMime(mime: string): string {
@@ -115,26 +116,45 @@ function dataUrlToBlob(dataUrl: string): Promise<Blob> {
   return fetch(dataUrl).then((r) => r.blob());
 }
 
-/** Modern ClipboardItem path (HTTPS / localhost secure context). */
-async function copyViaClipboardItem(text: string, blob: Blob, mime: string): Promise<boolean> {
+/** Modern ClipboardItem path (HTTPS / localhost secure context). Supports multiple images via text/html. */
+async function copyViaClipboardItem(
+  text: string,
+  firstBlob: Blob | null,
+  firstMime: string | null,
+  htmlPayload?: string,
+): Promise<boolean> {
   const clipboard = navigator.clipboard as Clipboard & {
     write?: (items: ClipboardItem[]) => Promise<void>;
   };
   if (typeof ClipboardItem === 'undefined' || !clipboard?.write) return false;
 
   const attempts: Array<Record<string, Blob | Promise<Blob>>> = [];
-  if (text) {
+
+  // Attempt 1: Full rich payload (Primary image binary + text/html + text/plain)
+  const fullItem: Record<string, Blob> = {};
+  if (firstBlob && firstMime) fullItem[firstMime] = firstBlob;
+  if (htmlPayload) fullItem['text/html'] = new Blob([htmlPayload], { type: 'text/html' });
+  if (text) fullItem['text/plain'] = new Blob([text], { type: 'text/plain' });
+  if (Object.keys(fullItem).length > 0) {
+    attempts.push(fullItem);
+  }
+
+  // Attempt 2: HTML + Plain Text (Multi-image safe across browsers)
+  if (htmlPayload) {
+    const htmlOnly: Record<string, Blob> = {
+      'text/html': new Blob([htmlPayload], { type: 'text/html' }),
+    };
+    if (text) htmlOnly['text/plain'] = new Blob([text], { type: 'text/plain' });
+    attempts.push(htmlOnly);
+  }
+
+  // Attempt 3: Single binary image + plain text fallback
+  if (firstBlob && firstMime && text) {
     attempts.push({
-      [mime]: blob,
+      [firstMime]: firstBlob,
       'text/plain': new Blob([text], { type: 'text/plain' }),
     });
-    attempts.push({
-      [mime]: Promise.resolve(blob),
-      'text/plain': Promise.resolve(new Blob([text], { type: 'text/plain' })),
-    });
   }
-  attempts.push({ [mime]: blob });
-  attempts.push({ [mime]: Promise.resolve(blob) });
 
   for (const payload of attempts) {
     try {
@@ -148,21 +168,23 @@ async function copyViaClipboardItem(text: string, blob: Blob, mime: string): Pro
 }
 
 /**
- * Select a real <img> + text and execCommand('copy').
- * Works on many Chromium builds even over plain HTTP LAN/public `--host`.
+ * Select real <img>s + text and execCommand('copy').
+ * Works on Chromium builds even over plain HTTP LAN/public `--host`.
  */
-function copyViaDomSelection(dataUrl: string, text: string): boolean {
+function copyViaDomSelection(dataUrls: string[], text: string): boolean {
   const host = document.createElement('div');
   host.contentEditable = 'true';
   host.setAttribute('aria-hidden', 'true');
   host.style.cssText =
     'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none;overflow:hidden;';
-  const img = document.createElement('img');
-  img.src = dataUrl;
-  img.alt = '';
-  host.appendChild(img);
-  if (text) {
+  for (const url of dataUrls) {
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = '';
+    host.appendChild(img);
     host.appendChild(document.createElement('br'));
+  }
+  if (text) {
     host.appendChild(document.createTextNode(text));
   }
   document.body.appendChild(host);
@@ -191,8 +213,8 @@ function copyViaDomSelection(dataUrl: string, text: string): boolean {
 }
 
 /** Force text/html + text/plain onto the clipboard via the copy event (HTTP-safe). */
-function copyViaClipboardEvent(dataUrl: string, text: string): boolean {
-  const html = buildCopyHtml(dataUrl, text);
+function copyViaClipboardEvent(dataUrls: string[], text: string): boolean {
+  const html = buildCopyHtml(dataUrls, text);
   let wrote = false;
   const onCopy = (event: ClipboardEvent) => {
     try {
@@ -216,26 +238,44 @@ function copyViaClipboardEvent(dataUrl: string, text: string): boolean {
 }
 
 /**
- * Copy text + first image (QQ/Telegram style).
- * Tries secure ClipboardItem first, then HTTP-safe DOM/HTML fallbacks so any
- * machine that can open `--host` WebUI can copy image+text — not only localhost.
+ * Copy text + all images into the clipboard.
+ * Preserves all attached pictures in text/html and primary image binary,
+ * so pasting into WebUI or rich-text apps restores every image and text.
  */
-export async function copyTextAndImage(
+export async function copyTextAndImages(
   text: string,
-  image?: CopyImage | null,
+  images?: CopyImage[] | null,
 ): Promise<boolean> {
-  if (!image?.data) return copyTextToClipboard(text);
+  const validImages = (images ?? []).filter((img) => !!img?.data);
+  if (validImages.length === 0) return copyTextToClipboard(text);
 
-  const dataUrl = imageToDataUrl(image);
+  const dataUrls = validImages.map(imageToDataUrl);
+  const html = buildCopyHtml(dataUrls, text);
+
+  let firstBlob: Blob | null = null;
+  let firstMime: string | null = null;
   try {
-    const blob = await dataUrlToBlob(dataUrl);
-    const mime = blob.type || image.media_type || 'image/png';
-    if (await copyViaClipboardItem(text, blob, mime)) return true;
+    firstBlob = await dataUrlToBlob(dataUrls[0]);
+    firstMime = firstBlob.type || validImages[0].media_type || 'image/png';
+  } catch {
+    /* ignore */
+  }
+
+  try {
+    if (await copyViaClipboardItem(text, firstBlob, firstMime, html)) return true;
   } catch {
     /* fall through to HTTP-safe paths */
   }
 
-  if (copyViaDomSelection(dataUrl, text)) return true;
-  if (copyViaClipboardEvent(dataUrl, text)) return true;
+  if (copyViaDomSelection(dataUrls, text)) return true;
+  if (copyViaClipboardEvent(dataUrls, text)) return true;
   return copyTextToClipboard(text);
+}
+
+/** Legacy single-image adapter, preserving backward compatibility. */
+export async function copyTextAndImage(
+  text: string,
+  image?: CopyImage | null,
+): Promise<boolean> {
+  return copyTextAndImages(text, image ? [image] : []);
 }

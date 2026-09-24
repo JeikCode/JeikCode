@@ -5,6 +5,7 @@
 //!   2. WaitAndRetry{secs:0} → sleeps 0 s, re-issues the round, turn succeeds with text
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use jeikcode_kernel::agent::{Agent, AgentHandle};
 use jeikcode_kernel::event::{AgentCommand, AgentEvent, StopReason};
 use jeikcode_kernel::hook::{LifecycleHooks, RateLimitDecision};
@@ -13,7 +14,6 @@ use jeikcode_kernel::provider::{ChatOptions, LlmProvider};
 use jeikcode_kernel::stream::{ProviderError, StreamEvent};
 use jeikcode_kernel::testkit::ScriptedRateLimitHook;
 use jeikcode_kernel::tool::{ToolDef, ToolRegistry};
-use futures::stream::BoxStream;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 

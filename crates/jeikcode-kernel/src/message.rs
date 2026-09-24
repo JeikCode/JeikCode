@@ -425,6 +425,84 @@ pub struct Conversation {
     pub cache_epoch: u64,
 }
 
+/// Adaptively prunes an oversized tool output for LLM context assembly.
+/// Keeps full verbatim content in persistent disk storage and WebUI presentation,
+/// while providing an error-focused (or success-compact) bounded context to the LLM.
+pub fn adaptive_prune_tool_output_for_llm(output: &str, is_error: bool) -> String {
+    const WIRE_FOLD_THRESHOLD: usize = 24 * 1024;
+    if output.len() <= WIRE_FOLD_THRESHOLD {
+        return output.to_string();
+    }
+
+    if output.contains("[jeikcode: output truncated") || output.contains("fetch_output(") {
+        return output.to_string();
+    }
+
+    let is_failure = is_error || {
+        if let Some(pos) = output.rfind("[exit code ") {
+            let after = &output[pos + 11..];
+            if let Some(end) = after.find(']') {
+                if let Ok(code) = after[..end].trim().parse::<i32>() {
+                    code != 0
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    let total = output.len();
+    if is_failure {
+        let head_len = 3000.min(total);
+        let tail_len = 16000.min(total.saturating_sub(head_len));
+
+        let head_end = head_char_boundary(output, head_len);
+        let tail_start = tail_char_boundary(output, tail_len);
+        let head = &output[..head_end];
+        let tail = &output[tail_start..];
+
+        format!(
+            "{head}\n\n[jeikcode: output condensed for LLM context (failure diagnostics focused) — {total} bytes total, showing first {} + last {} bytes. Full output stored in session history.]\n\n{tail}",
+            head.len(),
+            tail.len()
+        )
+    } else {
+        let head_len = 1500.min(total);
+        let tail_len = 2000.min(total.saturating_sub(head_len));
+
+        let head_end = head_char_boundary(output, head_len);
+        let tail_start = tail_char_boundary(output, tail_len);
+        let head = &output[..head_end];
+        let tail = &output[tail_start..];
+
+        format!(
+            "{head}\n\n[jeikcode: output condensed for LLM context (success output condensed) — {total} bytes total, showing first {} + last {} bytes. Full output stored in session history.]\n\n{tail}",
+            head.len(),
+            tail.len()
+        )
+    }
+}
+
+fn head_char_boundary(s: &str, n: usize) -> usize {
+    let mut i = n.min(s.len());
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn tail_char_boundary(s: &str, n: usize) -> usize {
+    let mut i = s.len().saturating_sub(n);
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
 impl Conversation {
     pub fn new() -> Self {
         Self::default()
@@ -442,12 +520,29 @@ impl Conversation {
     /// History the provider may see. Turn diagnostics stay in [`Self::messages`]
     /// so WebUI/TUI can replay the yellow notice, but they are not a user or
     /// assistant turn the model should continue from.
+    ///
+    /// NOTE: Full verbatim output is preserved on disk and in WebUI/TUI session state.
+    /// When assembling history for the LLM wire request, oversized tool results
+    /// are adaptively pruned in-memory to prevent context bloat.
     pub fn model_history(&self) -> Vec<Message> {
-        self.messages
+        let mut history: Vec<Message> = self
+            .messages
             .iter()
             .filter(|message| !message.is_display_only())
             .cloned()
-            .collect()
+            .collect();
+        Self::prune_messages_for_wire(&mut history);
+        history
+    }
+
+    /// Prune oversized tool output messages in-memory before sending to the LLM.
+    /// Preserves full disk history and WebUI presentation while focusing LLM attention.
+    pub fn prune_messages_for_wire(messages: &mut [Message]) {
+        for m in messages.iter_mut() {
+            if m.role == Role::Tool && m.text.len() > 24 * 1024 {
+                m.text = adaptive_prune_tool_output_for_llm(&m.text, m.is_error);
+            }
+        }
     }
 
     /// For any assistant message whose `tool_calls` lack a matching tool-result
@@ -1200,6 +1295,39 @@ impl SessionSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_adaptive_prune_wire_messages_preserves_convo_full_text() {
+        let mut c = Conversation::new();
+        c.push(Message::user("run build"));
+        c.push(Message::assistant("running", vec![]));
+
+        // 构造一个 40KB 的大型构建成功日志
+        let big_success_output = format!(
+            "Build started\n{}\n[exit code 0]\nFinished dev in 50s",
+            "Compiling foo v0.1.0\n".repeat(1500)
+        );
+        let orig_len = big_success_output.len();
+        assert!(orig_len > 30 * 1024);
+
+        c.push(Message::tool_result("call-1", &big_success_output, false));
+
+        // 1. 验证 convo 内部的 messages 依然 100% 保留全量数据（供磁盘和 WebUI 使用）
+        assert_eq!(c.messages[2].text.len(), orig_len);
+
+        // 2. 验证面向 LLM 的 model_history 被自动精准裁剪
+        let wire_messages = c.model_history();
+        let wire_tool_text = &wire_messages[2].text;
+        assert!(wire_tool_text.len() < 5000);
+        assert!(
+            wire_tool_text.contains("output condensed for LLM context (success output condensed)")
+        );
+        assert!(wire_tool_text.contains("Finished dev in 50s"));
+
+        // 3. 验证再次调用结果完全相同（确定性纯函数，Prefix Cache 安全）
+        let wire_messages_again = c.model_history();
+        assert_eq!(wire_messages[2].text, wire_messages_again[2].text);
+    }
 
     #[test]
     fn last_pressure_reads_latest_assistant_meta() {

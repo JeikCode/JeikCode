@@ -1443,7 +1443,7 @@ impl RunningAgent {
         let prepared = convo.prepare_plan(plan, floor);
         let report = prepared.report();
         let mut snapshot = None;
-        if report.committed && matches!(trigger_for_event, CompactTrigger::Manual { .. }) {
+        if report.committed {
             let Some(candidate) = prepared.candidate() else {
                 self.rt.emit(AgentEvent::CompactionFailed {
                     trigger: trigger_for_event,
@@ -3401,15 +3401,16 @@ impl RunningAgent {
                 self.finish_cancelled(convo, rollback_len, &turn_ctx).await;
                 return;
             }
-            let call_keys_by_id: std::collections::HashMap<String, (String, String)> = pending_calls
-                .iter()
-                .map(|c| {
-                    (
-                        c.id.clone(),
-                        (c.name.clone(), canonicalize_tool_args(&c.arguments)),
-                    )
-                })
-                .collect();
+            let call_keys_by_id: std::collections::HashMap<String, (String, String)> =
+                pending_calls
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.id.clone(),
+                            (c.name.clone(), canonicalize_tool_args(&c.arguments)),
+                        )
+                    })
+                    .collect();
             let mut plans: Vec<CallPlan> = Vec::with_capacity(pending_calls.len());
             let mut terminal_policy_denial_seen = false;
             for mut call in pending_calls {

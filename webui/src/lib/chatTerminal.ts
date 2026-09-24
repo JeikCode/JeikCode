@@ -208,7 +208,7 @@ export function userMessageAlreadyOnCanvas(
 type InFlightPart = {
   kind: string;
   text?: string;
-  tool?: { status?: string; name?: string };
+  tool?: { id?: string; status?: string; name?: string };
 };
 
 /** Trailing assistant still has a running tool, or an empty shell waiting for tokens. */

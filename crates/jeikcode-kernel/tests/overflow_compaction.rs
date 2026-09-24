@@ -3,6 +3,7 @@
 //! normal path: it fires ONLY on a typed overflow error, never from pressure.
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use jeikcode_kernel::agent::{Agent, AutoRespond};
 use jeikcode_kernel::message::{
     CompactTrigger, CompactionPlan, CompactionStrategy, CompactionView, Message, SessionSnapshot,
@@ -10,7 +11,6 @@ use jeikcode_kernel::message::{
 use jeikcode_kernel::provider::{ChatOptions, LlmProvider};
 use jeikcode_kernel::stream::{ProviderError, StreamEvent};
 use jeikcode_kernel::tool::{ToolDef, ToolRegistry};
-use futures::stream::BoxStream;
 use std::sync::{Arc, Mutex};
 
 /// Overflows whenever the incoming request carries more than `max` messages; otherwise

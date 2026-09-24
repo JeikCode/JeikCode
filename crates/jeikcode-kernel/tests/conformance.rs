@@ -10,6 +10,7 @@
 //! hook harnesses against its own extensions.)
 
 use async_trait::async_trait;
+use futures::stream::BoxStream;
 use jeikcode_kernel::conformance::{self, ConformanceReport};
 use jeikcode_kernel::hook::{HookChain, LifecycleHooks, NoopHooks};
 use jeikcode_kernel::message::{Message, MessageMeta};
@@ -25,7 +26,6 @@ use jeikcode_kernel::testkit::{
     WorkingDirProbeTool,
 };
 use jeikcode_kernel::tool::{RiskLevel, Tool, ToolCall, ToolContext, ToolDef, ToolResult};
-use futures::stream::BoxStream;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;

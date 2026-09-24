@@ -66,7 +66,7 @@ import {
 } from '../lib/attachments';
 import {
   collectClipboardFiles,
-  copyTextAndImage,
+  copyTextAndImages,
   copyTextToClipboard,
 } from '../lib/clipboard';
 import {
@@ -305,10 +305,10 @@ function formatMsgTimeFull(ts?: number): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
-/** Copy text + first image. Uses ClipboardItem on HTTPS/localhost, and
- *  HTTP-safe DOM/HTML fallbacks so LAN/public `--host` clients keep 图文. */
+/** Copy text + all attached images. Preserves every picture via ClipboardItem/HTML,
+ *  so pasting back into WebUI or rich-text messengers restores all images and text. */
 async function copyUserMessage(text: string, images?: ImageData[]): Promise<boolean> {
-  return copyTextAndImage(text, images?.[0] ?? null);
+  return copyTextAndImages(text, images);
 }
 
 function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
@@ -808,6 +808,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
   function setBusyAndClock(next: boolean) {
     if (next) startTurnClock();
     else finishTurnClock();
+    busyRef.current = next;
     setBusy(next);
   }
   const [chatRecovery, setChatRecovery] = useState<ChatRecoveryState>('ready');
@@ -1469,6 +1470,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
     setHistoryHint(null);
     setBusyAndClock(false);
     busyRef.current = false;
+    commitActiveTodosIntoLastAssistant();
     // API turn 已落盘:通知 App 刷新侧栏(消息数/自动命名标题),新建会话才会出现。
     onLiveTurnDone?.();
     startIdleWatch(projectHash, loadId, loadGeneration);
@@ -1884,6 +1886,15 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
         let nextHint: string | null = null;
         let resumeClockFrom: number | undefined;
         const currentCached = messageCacheRef.current.get(loadId);
+        const serverActive =
+          activeResult.status === 'fulfilled'
+            ? activeResult.value.includes(loadId)
+            : null;
+        if (serverActive === false) {
+          localTurnSessionsRef.current.delete(loadId);
+          backgroundRunningSessionsRef.current.delete(loadId);
+          onLiveRunningChange?.(loadId, false);
+        }
         const isLiveSession =
           syncRef.current &&
           (liveSessionIdRef.current === loadId ||
@@ -1912,10 +1923,12 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
           // overlay a canvas that already has turns. If the live projection is
           // empty (view-only hub snapshot) the canvas is also empty — then disk
           // is the recovery path after switching away and back.
+          // When serverActive === false, the turn finished while away; disk history
+          // is authoritative and must replace any stale in-flight cache.
           const canvasEmpty =
             messagesRef.current.length === 0 &&
             !(currentCached && currentCached.length > 0);
-          if (!isLiveSession || canvasEmpty) {
+          if (!isLiveSession || canvasEmpty || serverActive === false) {
             const loaded = sessionMessagesToDisplay(
               sessionResult.value.messages,
               sessionResult.value.offset ?? 0,
@@ -1932,14 +1945,6 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
             let displayMessages: Message[] = currentCached && currentCached.length > 0 ? currentCached : loaded;
 
             if (currentCached && currentCached.length > 0) {
-              const serverActive =
-                activeResult.status === 'fulfilled'
-                  ? activeResult.value.includes(loadId)
-                  : null;
-              if (serverActive === false) {
-                localTurnSessionsRef.current.delete(loadId);
-                backgroundRunningSessionsRef.current.delete(loadId);
-              }
               const turnActive =
                 serverActive !== null
                   ? serverActive
@@ -1972,13 +1977,17 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
               setMessages(loaded);
               pinTimelineToBottom();
             }
-            if (!activeTodosRef.current) {
-              const diskUnfinished = findLatestActiveTodos(displayMessages);
-              if (diskUnfinished && diskUnfinished.length > 0) {
-                setActiveTodos(diskUnfinished);
-                activeTodosRef.current = diskUnfinished;
-                activeTodosBySessionRef.current.set(loadId, diskUnfinished);
-              }
+            // Align active todos with the latest transcript: if all completed or no active plan,
+            // clear stale sticky todos so finished turns don't linger on session switch.
+            const diskUnfinished = findLatestActiveTodos(displayMessages);
+            if (diskUnfinished && diskUnfinished.length > 0) {
+              setActiveTodos(diskUnfinished);
+              activeTodosRef.current = diskUnfinished;
+              activeTodosBySessionRef.current.set(loadId, diskUnfinished);
+            } else {
+              setActiveTodos(null);
+              activeTodosRef.current = null;
+              activeTodosBySessionRef.current.delete(loadId);
             }
             applySessionTokens(loadId, displayMessages, sessionResult.value.token_usage ?? undefined);
             resumeClockFrom = [...displayMessages].reverse().find((m) => m.role === 'user')?.ts;
@@ -2034,23 +2043,16 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
               });
             }
           } else if (!active) {
-            // Sidebar switch used a stale local/background running flag. But if the
-            // session is an active liveSession and local state still has it running,
-            // or the cached transcript still has an in-flight assistant, do NOT immediately
-            // drop busy — wait for an authoritative terminal or live state event.
-            const hasLocalRunning =
-              localTurnSessionsRef.current.has(loadId) ||
-              backgroundRunningSessionsRef.current.has(loadId);
-            const inFlightCached = transcriptHasInFlightAssistant(currentCached ?? []);
-            if (!isLiveSession || (!hasLocalRunning && !inFlightCached)) {
-              localTurnSessionsRef.current.delete(loadId);
-              backgroundRunningSessionsRef.current.delete(loadId);
-              if (!abortRef.current) {
-                liveLifecycleRef.current = createLiveLifecycleState();
-                setBusyAndClock(false);
-              }
-              if (requestIdRef.current === loadId) requestIdRef.current = null;
+            localTurnSessionsRef.current.delete(loadId);
+            backgroundRunningSessionsRef.current.delete(loadId);
+            onLiveRunningChange?.(loadId, false);
+            if (!abortRef.current) {
+              liveLifecycleRef.current = createLiveLifecycleState();
+              setBusyAndClock(false);
+              busyRef.current = false;
             }
+            if (requestIdRef.current === loadId) requestIdRef.current = null;
+            onLiveTurnDone?.();
           } else if (requestIdRef.current === loadId) {
             requestIdRef.current = null;
           }
@@ -3645,7 +3647,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
   function closeOpenArtifactFence() {
     if (!artifactOpenRef.current) return;
     artifactOpenRef.current = false;
-    appendToLastAssistant('```\n', { skipReplayDedup: true });
+    appendToLastAssistant('\n```\n', { skipReplayDedup: true });
   }
 
   function addToolToLastAssistant(tool: ToolRow) {
@@ -3981,6 +3983,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
         setBusyAndClock(false);
         closeOpenArtifactFence();
         finalizePendingToolsOnCanvas();
+        commitActiveTodosIntoLastAssistant();
         onPermissionResolved?.(null); // 回合结束：兜底清掉任何残留审批卡片
         setUserInputReq(null);
         break;
@@ -4062,16 +4065,15 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
       // (and HTML/SVG) from TextDelta and emits them as separate artifact_* events.
       // Without handling these, the code content is silently lost in the WebUI.
       case 'artifact_start': {
-        artifactOpenRef.current = true;
         if (event.id?.startsWith('file-')) {
+          artifactOpenRef.current = false;
           break;
         }
-        if (event.language != null) {
-          const lang = event.language.trim();
-          appendToLastAssistant((lang ? '```' + lang : '```') + '\n', {
-            skipReplayDedup: true,
-          });
-        }
+        const lang = (event.language ?? '').trim();
+        appendToLastAssistant((lang ? '```' + lang : '```') + '\n', {
+          skipReplayDedup: true,
+        });
+        artifactOpenRef.current = true;
         break;
       }
       case 'artifact_content': {
@@ -4085,7 +4087,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
           break;
         }
         if (artifactOpenRef.current) {
-          appendToLastAssistant('```\n', { skipReplayDedup: true });
+          appendToLastAssistant('\n```\n', { skipReplayDedup: true });
         }
         artifactOpenRef.current = false;
         break;
@@ -4441,6 +4443,32 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
     // deliver 为组件内函数声明，闭包始终取最新渲染值；仅以 busy/queued 触发。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, queued, modeState.pendingMode, chatRecovery]);
+
+  /** 用户点击排队消息上的 × 撤回：从队列移除并完整回填文字与全部图片到输入框，避免输入前功尽弃。 */
+  function handleCancelQueuedMessage(q: QueuedMessage) {
+    setQueued((arr) => arr.filter((x) => x.id !== q.id));
+
+    if (q.text) {
+      setInput((current) => (current.trim() ? `${q.text}\n${current}` : q.text));
+    }
+
+    if (q.images && q.images.length > 0) {
+      const restoredImages: PendingAttach[] = q.images.map((img, idx) => ({
+        id: `restored-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+        kind: 'image' as const,
+        image: img,
+      }));
+      setPendingAttach((current) => [...current, ...restoredImages]);
+    }
+
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.style.height = 'auto';
+        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 240)}px`;
+      }
+    }, 0);
+  }
 
   function handleKeyDown(e: KeyboardEvent) {
     if (e.isComposing) return;
@@ -5127,7 +5155,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                     </span>
                   )}
                   {contextLimit ? (
-                    <span class="token-pill token-total" title={t('tokens.totalLimitTooltip', { total: totalStr, limit: limitStr, pct: pctOfLimit })}>
+                    <span class="token-pill token-total" title={t('tokens.totalLimitTooltip', { total: totalStr, limit: limitStr ?? '', pct: pctOfLimit ?? 0 })}>
                       <span class="token-icon">🎯</span>
                       <span>{formatTokenMetric(total)}/{formatTokenMetric(contextLimit)} ({pctOfLimit}%)</span>
                     </span>
@@ -5628,7 +5656,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
                 <span class="queued-tag">{t('chat.queued')}</span>
                 <button
                   class="queued-remove"
-                  onClick={() => setQueued((arr) => arr.filter((x) => x.id !== q.id))}
+                  onClick={() => handleCancelQueuedMessage(q)}
                   title={t('chat.removeQueued')}
                   aria-label={t('chat.removeQueued')}
                 >

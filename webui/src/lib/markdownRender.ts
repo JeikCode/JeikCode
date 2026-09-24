@@ -15,6 +15,18 @@ marked.setOptions({ gfm: true, breaks: false });
 // `1<del>3 …4</del>7`，吃掉波浪号且整段加删除线，与 TUI 显示不一致（issue #825）。
 marked.use({ tokenizer: { del: () => undefined } });
 
+// 禁用 4 空格缩进代码块（Indented Code Block）：在聊天气泡/模型输出场景中，
+// 代码块统一使用围栏代码块（```）。模型输出的多级缩进列表或段落容易被误当成缩进代码块，
+// 进而被错误渲染成带 Copy 按钮的冗余代码框。将 indented code 还原为普通文本段落。
+marked.use({
+  walkTokens(token) {
+    if (token.type === 'code' && (token as any).codeBlockStyle === 'indented') {
+      token.type = 'paragraph';
+      (token as any).tokens = [{ type: 'text', raw: token.text, text: token.text }];
+    }
+  },
+});
+
 const renderer = new marked.Renderer();
 
 const ALERT_TITLES: Record<string, string> = {

@@ -76,18 +76,35 @@ impl ArtifactStore {
     }
 }
 
-/// Default fold threshold: results larger than this (bytes) are replaced by a
-/// head+tail preview and spilled to an artifact. 64 KiB — bash/grep and other
+/// Default fold threshold: results larger than this (bytes) are replaced by an
+/// adaptive preview and spilled to an artifact. 32 KiB — bash/grep and other
 /// unbounded tools fold here. `read_file` self-caps at 65 KiB and opts out via
 /// `never_truncate_result()`, so a default page is not folded into fetch_output.
 /// Configurable per instance via [`ArtifactMiddleware::with_threshold_bytes`];
 /// `0` disables folding.
-pub const THRESHOLD_BYTES: usize = 64 * 1024;
+pub const THRESHOLD_BYTES: usize = 32 * 1024;
 /// Stable prefix embedded in a conversation-visible result when the complete
 /// tool output was replaced by an artifact-backed head/tail preview.
 pub const ARTIFACT_TRUNCATION_MARKER_PREFIX: &str = "[jeikcode: output truncated";
 /// Max bytes an artifact may store; larger results are inline-truncated only.
 const MAX_ARTIFACT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Detect if a tool result indicates a command failure / error state (exit code != 0).
+fn is_failure_outcome(result: &jeikcode_kernel::tool::ToolResult) -> bool {
+    if result.is_error {
+        return true;
+    }
+    if let Some(pos) = result.content.rfind("[exit code ") {
+        let after = &result.content[pos + 11..];
+        if let Some(end) = after.find(']') {
+            let code_str = after[..end].trim();
+            if let Ok(code) = code_str.parse::<i32>() {
+                return code != 0;
+            }
+        }
+    }
+    false
+}
 
 /// Preview half-size for a result above the fold threshold. Scales WITH the
 /// threshold (`threshold/2` on each side, so a 64 KiB threshold keeps 64 KiB
@@ -176,19 +193,28 @@ impl jeikcode_kernel::middleware::ToolMiddleware for ArtifactMiddleware {
         {
             return jeikcode_kernel::middleware::AfterOutcome::Proceed;
         }
-        // Preview scales with the threshold: each side keeps threshold/2, so
-        // retention ≈ 100% of the allowed budget (grok-style), not a fixed
-        // tiny window. Clamped so previews never get pathological.
-        let half = preview_half(self.threshold_bytes);
-        let head_end = head_boundary(&result.content, half);
-        let tail_begin = tail_start(&result.content, half);
+        // Adaptive dual-state folding:
+        // - Success state (exit 0): aggressive compact preview (keeps ~3KB summary, eliding 95%+ redundant compiler roll).
+        // - Failure state (exit != 0): 20/80 tail-biased diagnostic focus (keeps generous tail for error trace & line numbers).
+        let is_failure = is_failure_outcome(result);
+        let (head_budget, tail_budget, status_label) = if is_failure {
+            let total_budget = self.threshold_bytes.clamp(16 * 1024, 64 * 1024);
+            let head_part = (total_budget / 5).clamp(2 * 1024, 8 * 1024);
+            let tail_part = total_budget.saturating_sub(head_part);
+            (head_part, tail_part, "failure diagnostics focused")
+        } else {
+            (1500, 2500, "success output condensed")
+        };
+
+        let head_end = head_boundary(&result.content, head_budget);
+        let tail_begin = tail_start(&result.content, tail_budget);
         let head = &result.content[..head_end];
         let tail = &result.content[tail_begin..];
 
         if total > MAX_ARTIFACT_BYTES {
             // Too large to store; inline-truncate only.
             let marker = format!(
-                "\n\n[jeikcode: output truncated — {total} bytes total, showing first {} + last {} bytes. \
+                "\n\n[jeikcode: output truncated ({status_label}) — {total} bytes total, showing first {} + last {} bytes. \
 Full output unavailable (exceeds {MAX_ARTIFACT_BYTES}-byte artifact ceiling).]\n\n",
                 head.len(),
                 tail.len()
@@ -199,13 +225,13 @@ Full output unavailable (exceeds {MAX_ARTIFACT_BYTES}-byte artifact ceiling).]\n
 
         let marker = match self.store.put(result.content.as_bytes()) {
             Ok(id) => format!(
-                "\n\n[jeikcode: output truncated — {total} bytes total, showing first {} + last {} bytes. \
+                "\n\n[jeikcode: output truncated ({status_label}) — {total} bytes total, showing first {} + last {} bytes. \
 Full output saved as artifact {id}. To read more: fetch_output(artifact_id=\"{id}\", offset, limit).]\n\n",
                 head.len(),
                 tail.len()
             ),
             Err(_) => format!(
-                "\n\n[jeikcode: output truncated — {total} bytes total, showing first {} + last {} bytes. \
+                "\n\n[jeikcode: output truncated ({status_label}) — {total} bytes total, showing first {} + last {} bytes. \
 Full output unavailable (could not be saved).]\n\n",
                 head.len(),
                 tail.len()
