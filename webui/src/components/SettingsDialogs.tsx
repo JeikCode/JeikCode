@@ -22,10 +22,11 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { Select } from './Select';
 
 // 上下文窗口预设（数值与配置一致，显示时按 /1000 换算为「k tokens」）。
-const CONTEXT_WINDOW_PRESETS = [32000, 64000, 128000, 256000, 512000, 1000000, 2000000];
+// 上下文窗口预设（淘汰 256K 以下选项，保留 256K 及以上主流长窗口）。
+const CONTEXT_WINDOW_PRESETS = [256000, 512000, 1000000, 2000000];
 
-/** 最大输出预算预设选项（默认包含 65536 和 131072 即 65536 的二倍）。 */
-const MAX_OUTPUT_PRESETS = [8192, 16384, 32768, 65536, 131072];
+/** 最大输出预算预设选项（淘汰 32768 以下选项，保留 32768 及以上主流输出预算）。 */
+const MAX_OUTPUT_PRESETS = [32768, 65536, 131072];
 
 function fmtMaxTokens(v: number): string {
   if (v === 65536) return '64K (65,536)';
