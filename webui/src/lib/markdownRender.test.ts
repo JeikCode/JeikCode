@@ -111,3 +111,24 @@ test('indented code blocks with nested markdown are unpacked and rendered as ric
   assert.match(out, /<h4[^>]*>标题内容<\/h4>/);
   assert.match(out, /<li>列表条目<\/li>/);
 });
+
+test('code blocks with numbered lines and dashed dividers are not truncated when closed properly', () => {
+  const md = [
+    '```text',
+    '1. 插入老数据: id=3673',
+    '2. 首次查询结果: Track 2',
+    '------------------------------------------------------------',
+    '协议 [OpenAI Chat]:',
+    '  - 首位是合法思考块: True',
+    '>>> [PASS] 验证通过！',
+    '```',
+    '*老数据首次查询无损捞出并自动自愈打上标签。*',
+  ].join('\n');
+  const out = markdownToHtml(md);
+  // 必须只生成 1 个完整的代码块，里面的数字列表和横线完好保留
+  assert.equal((out.match(/code-block-wrapper/g) ?? []).length, 1);
+  assert.match(out, /1\. 插入老数据/);
+  assert.match(out, /------------------------------------------------------------/);
+  // 代码块外部的斜体必须作为普通段落渲染，绝不能被反相吞入代码块
+  assert.match(out, /<em>老数据首次查询无损捞出并自动自愈打上标签。<\/em>/);
+});

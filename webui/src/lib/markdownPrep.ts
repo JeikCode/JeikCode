@@ -66,30 +66,21 @@ export function fenceClose(line: string, state: FenceState): boolean {
 
 /**
  * 结构性终结判定：判断当前行是否为明确的外部顶层块级元素
- * 当处于未闭合代码块内部时，若出现这些标记，说明模型遗漏了闭合 ```，必须强制自愈闭合上一个代码块
+ * 当处于未闭合代码块内部时，若出现明确的外部顶层标题或新的代码块开启，说明模型遗漏了闭合 ```，必须强制自愈闭合上一个代码块。
+ * 严禁将数字序号列表 (1. 2.) 或横线分割线 (---) 作为终结符，否则会导致包含测试日志、终端输出的代码块被腰斩破坏！
  */
 export function isStructuralTerminator(line: string, currentFence: FenceState): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
 
-  // 1. 明确的 ATX 标题（如 # 标题、#### 2. 标题、#### 3. 标题）
+  // 1. 明确的外部 ATX 标题（如 # 标题、#### 2. 标题、#### 3. 标题）
   if (/^#{1,6}\s+\S+/.test(trimmed)) {
     return true;
   }
 
-  // 2. 水平分割线（如 --- 或 *** 或 ___）
-  if (/^([-*_]\s*){3,}$/.test(trimmed)) {
-    return true;
-  }
-
-  // 3. 另一个新的代码块开启行（例如上一块漏闭合，直接开启新的 ```rust 或 ```python）
+  // 2. 另一个新的代码块开启行（例如上一块漏闭合，直接开启新的 ```rust 或 ```python）
   const opening = fenceOpen(line);
   if (opening && (opening.marker !== currentFence.marker || trimmed.length > opening.length)) {
-    return true;
-  }
-
-  // 4. 常见的大段标头序号，例如 1. 2. 3. 或带粗体的列表项
-  if (/^\d+\.\s+\S+/.test(trimmed) || /^[-*+]\s+\*\*[^*]+\*\*：?/.test(trimmed)) {
     return true;
   }
 
@@ -440,14 +431,14 @@ export function preprocessMarkdown(raw: string): string {
       }
 
       // ★ 结构性终结自愈：代码块内部若遇到明确的外部顶层块级元素
-      // （如标题 ^#{1,6}\s+、水平线 ^---+$、新的围栏代码块开启），
+      // （如明确的 ATX 标题 ^#{1,6}\s+、新的围栏代码块开启），
       // 说明上一个代码块模型漏打了闭合 ```！
       // 必须立刻在 result 中补上闭合围栏，强制终结代码块，并将本行正常放行到后续流程解析！
       if (isStructuralTerminator(line, inFence)) {
         const fence = inFence.marker.repeat(inFence.length);
         result.push(fence);
         inFence = null;
-        // 不 continue，让本行（标题/分割线/新代码块）正常流向下方的块级处理！
+        // 不 continue，让本行（标题/新代码块）正常流向下方的块级处理！
       } else {
         result.push(line);
         continue;
