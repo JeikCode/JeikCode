@@ -44,3 +44,22 @@ test('inline $x^2$ renders and currency stays literal', () => {
   assert.match(html, /katex/);
   assert.match(html, /\$100/);
 });
+
+test('unclosed or cross-paragraph backticks do not swallow subsequent LaTeX formulas', () => {
+  const md = [
+    '正文的 `` 标记（未在当前段闭合）',
+    '',
+    '### 三、总结',
+    '',
+    '1. 思考文本：通过 `thought: true` $\\rightleftharpoons$ `` 正文 的管道',
+    '2. 防伪签名：$\\succ$ 官方哨兵',
+  ].join('\n');
+
+  const html = markdownToHtml(md);
+  // 必须成功渲染双向鱼叉箭头 ⇌ (rightleftharpoons) 和偏序符号 ≻ (succ)
+  assert.match(html, /⇌/);
+  assert.match(html, /≻/);
+  assert.doesNotMatch(html, /\$\\rightleftharpoons\$/);
+  assert.doesNotMatch(html, /\$\\succ\$/);
+});
+

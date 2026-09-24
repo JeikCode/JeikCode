@@ -26,8 +26,17 @@ function skipInlineCode(source: string, start: number): number {
   while (start + ticks < source.length && source[start + ticks] === '`') ticks += 1;
   if (ticks === 0) return start;
   const closer = '`'.repeat(ticks);
+
+  // CommonMark: code span 绝不能跨越段落空行（blank line）
+  const nextBlank = source.slice(start + ticks).search(/\n\s*\n/);
+  const limit = nextBlank === -1 ? source.length : start + ticks + nextBlank;
+
   const closeAt = source.indexOf(closer, start + ticks);
-  return closeAt === -1 ? source.length : closeAt + ticks;
+  if (closeAt === -1 || closeAt >= limit) {
+    // 当前段落内未闭合：不是合法 code span，仅跳过反引号自身，避免吞噬后续正文与公式
+    return start + ticks;
+  }
+  return closeAt + ticks;
 }
 
 function fenceKind(line: string): { marker: '`' | '~'; length: number } | null {
