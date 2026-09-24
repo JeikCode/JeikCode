@@ -194,6 +194,7 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
                         .map_err(ProviderBuildError::Adapter)?;
                 pc.thinking_type = cfg.thinking_type.clone();
                 pc.thinking_keep = cfg.thinking_keep.clone();
+                pc.thinking_budget = cfg.thinking_budget;
                 pc.user_agent = Some(ua);
                 pc.skip_tls_verify = cfg.skip_tls_verify;
                 if let Some(authenticator) = &self.authenticator {

@@ -197,8 +197,8 @@ context_window = 32768
   TUI 中使用 `Ctrl+T` 循环切换思考强度的可用档位列表。
 - `thinking_enabled` (布尔值，适用于 Claude / Gemini):
   是否开启扩展思考。Claude 走 `thinking` 块；Gemini 2.5 发 `thinkingBudget: 0` 关闭，**Gemini 3 及以上**发 `thinkingLevel: MINIMAL`。未设置时 Gemini 2.5 与 **3+** 默认开启。
-- `thinking_budget` (整数，Claude 默认 10000；Gemini 2.5 为 thinkingBudget):
-  思考 Token 预算上限。**Gemini 3 及以上**优先用 `reasoning_effort` 映射的 `thinkingLevel`（low/medium/high）。
+- `thinking_budget` (整数，Claude 默认 10000；Gemini 2.5 为 thinkingBudget；OpenAI 兼容协议映射为 thinking.budget_tokens):
+  思考 Token 预算上限。Claude 与 OpenAI 兼容协议映射为 `thinking: {type:"enabled", budget_tokens:...}`；Gemini 2.5 映射为 `thinkingBudget`。**Gemini 3 及以上**优先用 `reasoning_effort` 映射的 `thinkingLevel`（low/medium/high）。
 - `skip_tls_verify` (布尔值，默认 false):
   内网或自签证书环境下跳过 TLS 证书检查。
 

@@ -108,7 +108,7 @@ image_input = true                          # 开启图片直接输入（多模�
 | **`reasoning_effort`** | 字符串 | 思考模型 | **推理深度档位**：`"low"` \| `"medium"` \| `"high"` \| `"max"`。 |
 | **`reasoning_levels`** | 数组 | 思考模型 | TUI 界面中通过快捷键 `Ctrl+T` 快速循环切换思考强度的候选列表，例如 `["low", "medium", "high", "max"]`。 |
 | `thinking_enabled` | 布尔值 | Claude / Gemini | 是否开启扩展思考。Claude 发 `thinking: {type:"enabled", budget_tokens:...}`；Gemini 2.5 关思考发 `thinkingBudget: 0`，**Gemini 3 及以上**发 `thinkingLevel: MINIMAL`。未设置时 Gemini 2.5 与 **3+** 默认开启。 |
-| `thinking_budget` | 整数 | Claude / Gemini 2.5 | Anthropic 思考 Token 预算（默认 10000）；Gemini 2.5 映射为 `thinkingConfig.thinkingBudget`。**Gemini 3 及以上**优先用 `reasoning_effort` → `thinkingLevel`。 |
+| `thinking_budget` | 整数 | Claude / Gemini 2.5 / OpenAI 兼容 | 思考 Token 预算（Claude 默认 10000；Gemini 2.5 映射为 `thinkingConfig.thinkingBudget`；OpenAI 兼容协议映射为 `thinking: {type:"enabled", budget_tokens:...}` 并自动校验提升 `max_tokens > budget` 防止网关报错）。**Gemini 3 及以上**优先用 `reasoning_effort` → `thinkingLevel`。 |
 | `coalesce_system` | 布尔值 | OpenAI 兼容 | **是否将多段系统提示词折叠合并为单条**：默认 `false`（保持多段独立以享受前缀缓存红利）；仅在连接不支持多条 System 消息的老旧网关时设为 `true`。 |
 | `image_input` | 布尔值 | 视觉模型 | 别名 `supports_vision`。设为 `true` 时支持图片直接贴入或由 `read_file` 返回图像。 |
 | `vision_preprocessor_provider` | 字符串 | 顶层全局 | **视觉预处理代答**：当主模型为纯文本模型时，粘贴图片将自动转给指定的 VL 视觉模型进行 OCR 提取。 |

@@ -53,6 +53,9 @@ pub struct OpenAiCompatConfig {
     pub thinking_type: Option<String>,
     /// Kimi K2.6 preserved thinking: `thinking.keep` in the request body.
     pub thinking_keep: Option<String>,
+    /// Thinking budget tokens (e.g. 16384 for Claude/Gemini-backed OpenAI-compatible gateways).
+    /// Serialized into `thinking.budget_tokens`.
+    pub thinking_budget: Option<u32>,
     /// Per-chunk stream-idle watchdog: no bytes for this long ⇒ terminal error.
     pub idle_timeout: Duration,
     pub connect_timeout: Duration,
@@ -141,6 +144,7 @@ impl OpenAiCompatConfig {
             reasoning_policy: None,
             thinking_type: None,
             thinking_keep: None,
+            thinking_budget: None,
             idle_timeout: Duration::from_secs(120),
             open_timeout: Duration::from_secs(90),
             connect_timeout: Duration::from_secs(30),
@@ -1058,7 +1062,32 @@ fn build_request_body(
         || m_lower.contains("o1-")
         || m_lower.contains("o3-");
 
-    let max_tokens = options.max_tokens.or(cfg.max_tokens);
+    let is_effort_off = options.reasoning_effort.as_ref().is_some_and(|e| {
+        matches!(e, ReasoningEffort::Off)
+            || e.as_str().eq_ignore_ascii_case("off")
+            || e.as_str().eq_ignore_ascii_case("none")
+    });
+
+    let effective_budget = if is_effort_off {
+        None
+    } else {
+        cfg.thinking_budget
+    };
+
+    let mut max_tokens = options.max_tokens.or(cfg.max_tokens);
+    // When an explicit thinking budget is requested and max_tokens is less than or equal to budget,
+    // automatically expand max_tokens so upstream gateways (e.g. Anthropic-backed) won't 400
+    // on `max_tokens must be greater than budget_tokens`.
+    if let Some(budget) = effective_budget {
+        if budget > 0 {
+            if let Some(mt) = max_tokens {
+                if mt <= budget {
+                    max_tokens = Some(budget + 8192);
+                }
+            }
+        }
+    }
+
     if let Some(max_tokens) = max_tokens {
         if is_o_series {
             body.insert("max_completion_tokens".into(), json!(max_tokens));
@@ -1095,12 +1124,23 @@ fn build_request_body(
             body.insert("temperature".into(), json!(t));
         }
     }
-    // Kimi-family `thinking` object — only when configured (omitted otherwise so non-Kimi
-    // gateways don't 400 on an unknown top-level key). Port of v1's `thinking_body_value`.
-    if let Some(thinking) =
-        thinking_body_value(cfg.thinking_type.as_deref(), cfg.thinking_keep.as_deref())
-    {
-        body.insert("thinking".into(), thinking);
+    // Thinking object: Kimi-family or Claude/Gemini-backed OpenAI gateways that accept
+    // `thinking: { "type": "enabled", "budget_tokens": ... }`.
+    // Omitted otherwise so pure OpenAI gateways don't 400 on an unknown top-level key.
+    let has_thinking_config = cfg.thinking_type.is_some() || cfg.thinking_budget.is_some();
+    if has_thinking_config {
+        let thinking_type_override = if is_effort_off {
+            Some("disabled")
+        } else {
+            cfg.thinking_type.as_deref()
+        };
+        if let Some(thinking) = thinking_body_value(
+            thinking_type_override,
+            cfg.thinking_keep.as_deref(),
+            effective_budget,
+        ) {
+            body.insert("thinking".into(), thinking);
+        }
     }
     if !tools.is_empty() {
         let t: Vec<Value> = tools
@@ -1221,21 +1261,38 @@ fn effort_unsupported_error() -> ProviderError {
     }
 }
 
-/// Build Kimi's `thinking` request-body object from the two flat config fields. `None`
-/// when both are unset, so the caller omits the whole key. Byte-for-byte port of v1's
-/// `thinking_body_value`.
-fn thinking_body_value(thinking_type: Option<&str>, thinking_keep: Option<&str>) -> Option<Value> {
-    if thinking_type.is_none() && thinking_keep.is_none() {
+/// Build `thinking` request-body object (for Kimi, or OpenAI-compatible gateways that accept Anthropic-style thinking).
+/// `None` when thinking_type, thinking_keep, and thinking_budget are all unset, so the caller omits the whole key.
+fn thinking_body_value(
+    thinking_type: Option<&str>,
+    thinking_keep: Option<&str>,
+    thinking_budget: Option<u32>,
+) -> Option<Value> {
+    if thinking_type.is_none() && thinking_keep.is_none() && thinking_budget.is_none() {
         return None;
     }
     let mut obj = Map::new();
-    if let Some(t) = thinking_type {
-        obj.insert("type".into(), json!(t));
+    let type_val = thinking_type.unwrap_or(if thinking_budget.is_some() {
+        "enabled"
+    } else {
+        ""
+    });
+    if !type_val.is_empty() {
+        obj.insert("type".into(), json!(type_val));
     }
     if let Some(k) = thinking_keep {
         obj.insert("keep".into(), json!(k));
     }
-    Some(Value::Object(obj))
+    if let Some(b) = thinking_budget {
+        if type_val != "disabled" {
+            obj.insert("budget_tokens".into(), json!(b));
+        }
+    }
+    if obj.is_empty() {
+        None
+    } else {
+        Some(Value::Object(obj))
+    }
 }
 
 fn effort_str(e: &ReasoningEffort) -> &str {
@@ -2609,6 +2666,80 @@ mod tests {
             body.get("thinking").is_none(),
             "omit thinking when unset (non-Kimi-safe)"
         );
+    }
+
+    #[test]
+    fn thinking_budget_emits_budget_tokens_and_enabled_type() {
+        let mut cfg = OpenAiCompatConfig::new("k", "https://x", "gemini-3.8-flash");
+        cfg.thinking_budget = Some(16384);
+        let opts = ChatOptions {
+            reasoning_effort: Some(ReasoningEffort::High),
+            ..Default::default()
+        };
+        let body = build_request_body(
+            "gemini-3.8-flash",
+            &[Message::user("hi")],
+            &[],
+            &opts,
+            &cfg,
+            ReasoningPolicy::Exclude,
+        );
+        assert_eq!(
+            body["thinking"],
+            json!({
+                "type": "enabled",
+                "budget_tokens": 16384
+            })
+        );
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn thinking_budget_expands_max_tokens_when_smaller() {
+        let mut cfg = OpenAiCompatConfig::new("k", "https://x", "gemini-3.8-flash");
+        cfg.thinking_budget = Some(16384);
+        cfg.max_tokens = Some(4096);
+        let body = build_request_body(
+            "gemini-3.8-flash",
+            &[Message::user("hi")],
+            &[],
+            &ChatOptions::default(),
+            &cfg,
+            ReasoningPolicy::Exclude,
+        );
+        assert_eq!(
+            body["thinking"],
+            json!({
+                "type": "enabled",
+                "budget_tokens": 16384
+            })
+        );
+        assert_eq!(body["max_tokens"], 16384 + 8192);
+    }
+
+    #[test]
+    fn thinking_budget_suppressed_when_effort_off() {
+        let mut cfg = OpenAiCompatConfig::new("k", "https://x", "gemini-3.8-flash");
+        cfg.thinking_budget = Some(16384);
+        let opts = ChatOptions {
+            reasoning_effort: Some(ReasoningEffort::Off),
+            ..Default::default()
+        };
+        let body = build_request_body(
+            "gemini-3.8-flash",
+            &[Message::user("hi")],
+            &[],
+            &opts,
+            &cfg,
+            ReasoningPolicy::Exclude,
+        );
+        assert_eq!(
+            body["thinking"],
+            json!({
+                "type": "disabled"
+            })
+        );
+        assert_eq!(body["reasoning_effort"], "none");
     }
 
     #[test]
