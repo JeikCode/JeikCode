@@ -19,12 +19,12 @@ use super::reasoning::{ReasoningPolicy, REASONING_PLACEHOLDER};
 use super::retry::{self, RetryPolicy};
 use super::sign::{RequestSigner, RequestSigningError};
 use async_trait::async_trait;
+use futures::stream::BoxStream;
+use futures::StreamExt;
 use jeikcode_kernel::message::{Message, Role};
 use jeikcode_kernel::provider::{ChatOptions, LlmProvider, ReasoningEffort, ToolChoice};
 use jeikcode_kernel::stream::{ProviderError, StreamEvent, TokenUsage};
 use jeikcode_kernel::tool::{ToolCall, ToolDef};
-use futures::stream::BoxStream;
-use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::time::Duration;
@@ -1143,6 +1143,10 @@ pub fn reason_effort_applicable(model: &str) -> bool {
         || m.contains("o3-")
         || jeikcode_config::config::provider::gemini_defaults_thinking(model)
         || m.contains("grok")
+        || m.contains("claude-3-7")
+        || m.contains("claude-3.7")
+        || m.contains("claude-opus-4")
+        || m.contains("thinking")
 }
 
 /// Effort string that actually rides the wire (Chat Completions
@@ -1154,6 +1158,9 @@ pub fn reason_effort_applicable(model: &str) -> bool {
 /// [`ReasoningEffort::Custom`]). Grok defaults to `"high"` when unset.
 pub fn resolve_wire_effort(model: &str, options: &ChatOptions) -> Option<String> {
     if let Some(effort) = &options.reasoning_effort {
+        if matches!(effort, ReasoningEffort::Off) {
+            return Some("none".to_string());
+        }
         return Some(effort.as_str().to_string());
     }
     if model.to_ascii_lowercase().contains("grok") {
@@ -1177,7 +1184,7 @@ pub fn effort_control_applicable(
     }
     if reasoning_effort.is_some_and(|e| {
         let t = e.trim();
-        !t.is_empty() && !t.eq_ignore_ascii_case("off") && !t.eq_ignore_ascii_case("none")
+        !t.is_empty()
     }) {
         return true;
     }
@@ -2429,8 +2436,7 @@ mod tests {
 
     #[test]
     fn proxied_deepseek_v4_omits_unsupported_tool_choice() {
-        let cfg =
-            OpenAiCompatConfig::new("k", "", "deepseek-v4-flash");
+        let cfg = OpenAiCompatConfig::new("k", "", "deepseek-v4-flash");
         let opts = ChatOptions {
             reasoning_effort: Some(ReasoningEffort::High),
             tool_choice: ToolChoice::Specific("todowrite".into()),

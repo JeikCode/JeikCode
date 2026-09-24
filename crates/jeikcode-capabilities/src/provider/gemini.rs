@@ -13,12 +13,12 @@ use super::openai_compat::{build_http_client, SwappableClient};
 use super::reasoning::ReasoningPolicy;
 use super::retry::{self, RetryPolicy};
 use async_trait::async_trait;
+use futures::stream::BoxStream;
+use futures::StreamExt;
 use jeikcode_kernel::message::{Message, Role};
 use jeikcode_kernel::provider::{ChatOptions, LlmProvider, ReasoningEffort, ToolChoice};
 use jeikcode_kernel::stream::{ProviderError, StreamEvent, TokenUsage};
 use jeikcode_kernel::tool::{ToolCall, ToolDef};
-use futures::stream::BoxStream;
-use futures::StreamExt;
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
@@ -397,12 +397,11 @@ fn thinking_is_on(cfg: &GeminiConfig, options: &ChatOptions) -> bool {
     if cfg.thinking_enabled == Some(false) {
         return false;
     }
-    if options
-        .reasoning_effort
-        .as_ref()
-        .map(|e| e.as_str())
-        .is_some_and(|s| s.eq_ignore_ascii_case("off") || s.eq_ignore_ascii_case("none"))
-    {
+    if options.reasoning_effort.as_ref().is_some_and(|e| {
+        matches!(e, ReasoningEffort::Off)
+            || e.as_str().eq_ignore_ascii_case("off")
+            || e.as_str().eq_ignore_ascii_case("none")
+    }) {
         return false;
     }
     if cfg.thinking_enabled == Some(true) {
@@ -419,11 +418,12 @@ fn thinking_is_on(cfg: &GeminiConfig, options: &ChatOptions) -> bool {
 
 fn thinking_level_for(effort: &ReasoningEffort) -> &'static str {
     match effort {
+        ReasoningEffort::Off => "MINIMAL",
         ReasoningEffort::Low => "LOW",
         ReasoningEffort::Medium => "MEDIUM",
         ReasoningEffort::High | ReasoningEffort::Max | ReasoningEffort::XHigh => "HIGH",
         ReasoningEffort::Custom(s) => match s.to_ascii_uppercase().as_str() {
-            "MINIMAL" => "MINIMAL",
+            "MINIMAL" | "OFF" | "NONE" => "MINIMAL",
             "LOW" => "LOW",
             "MEDIUM" => "MEDIUM",
             "HIGH" | "MAX" | "XHIGH" => "HIGH",
@@ -437,9 +437,10 @@ fn thinking_budget_for(cfg: &GeminiConfig, options: &ChatOptions) -> u32 {
         return b;
     }
     match &options.reasoning_effort {
-        Some(ReasoningEffort::Low) => 1024,
-        Some(ReasoningEffort::Medium) => 4096,
-        Some(ReasoningEffort::High | ReasoningEffort::Max | ReasoningEffort::XHigh) => 8192,
+        Some(ReasoningEffort::Off) => 0,
+        Some(ReasoningEffort::Low) => 2048,
+        Some(ReasoningEffort::Medium) => 5120,
+        Some(ReasoningEffort::High | ReasoningEffort::Max | ReasoningEffort::XHigh) => 16384,
         Some(ReasoningEffort::Custom(s)) => s.parse().unwrap_or(8192),
         None => 8192,
     }
@@ -1050,7 +1051,9 @@ mod tests {
         let c = cfg("gemini-3-flash");
         let msgs = vec![
             Message::system("<environment>env</environment>"),
-            Message::system("<workflow_and_execution_discipline>wf</workflow_and_execution_discipline>"),
+            Message::system(
+                "<workflow_and_execution_discipline>wf</workflow_and_execution_discipline>",
+            ),
             Message::user("=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===\nagents"),
             Message::user("hello"),
         ];

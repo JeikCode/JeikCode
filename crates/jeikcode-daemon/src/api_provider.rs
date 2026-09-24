@@ -1,9 +1,9 @@
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use jeikcode_config::config::provider::{
     default_context_window_for, ModelProfileConfig, ProviderAccountConfig, ProviderConfig,
     ProviderPricing,
 };
 use jeikcode_config::config::provider_preset;
-use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use serde::Deserialize;
 
 use crate::{
@@ -185,11 +185,14 @@ pub(crate) async fn create_provider(Json(req): Json<CreateProviderRequest>) -> i
     if req.model.trim().is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "Model cannot be empty").into_response();
     }
-    // Validate thinking budget
+    // Validate thinking budget (0 is allowed to indicate disabled/off)
     if let Some(budget) = req.thinking_budget {
-        if budget < 1024 {
-            return json_error(StatusCode::BAD_REQUEST, "thinking_budget must be >= 1024")
-                .into_response();
+        if budget != 0 && budget < 1024 {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "thinking_budget must be >= 1024 (or 0 to disable)",
+            )
+            .into_response();
         }
     }
     if req
@@ -379,10 +382,13 @@ pub(crate) async fn patch_provider(
         .thinking_budget
         .as_ref()
         .and_then(|budget| budget.as_ref())
-        .is_some_and(|budget| *budget < 1024)
+        .is_some_and(|budget| *budget != 0 && *budget < 1024)
     {
-        return json_error(StatusCode::BAD_REQUEST, "thinking_budget must be >= 1024")
-            .into_response();
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "thinking_budget must be >= 1024 (or 0 to disable)",
+        )
+        .into_response();
     }
     let final_name = match req.name.as_deref() {
         Some(new_name) if new_name.trim() != name => {
@@ -894,12 +900,7 @@ pub(crate) async fn create_or_update_provider_account(
         Ok(id) => id,
         Err(e) => return json_error(StatusCode::BAD_REQUEST, e).into_response(),
     };
-    let new_id = match req
-        .id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    let new_id = match req.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => match validate_provider_name(raw) {
             Ok(id) => id,
             Err(e) => return json_error(StatusCode::BAD_REQUEST, e).into_response(),
@@ -948,10 +949,7 @@ pub(crate) async fn create_or_update_provider_account(
             .provider_accounts
             .entry(path_id.clone())
             .or_insert_with(|| ProviderAccountConfig {
-                provider: req
-                    .provider_type
-                    .clone()
-                    .unwrap_or_else(|| "openai".into()),
+                provider: req.provider_type.clone().unwrap_or_else(|| "openai".into()),
                 display_name: None,
                 api_key: None,
                 base_url: None,
@@ -1139,7 +1137,11 @@ fn resolve_upstream_request(req: &UpstreamModelsRequest) -> Result<UpstreamResol
                         api_key = key;
                     }
                     if base_url.is_empty() {
-                        if let Some(url) = p.base_url.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                        if let Some(url) = p
+                            .base_url
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
                         {
                             base_url = url.to_string();
                         }
@@ -1291,9 +1293,11 @@ async fn fetch_upstream_model_ids(
 
 #[cfg(test)]
 mod upstream_tests {
-    use super::{models_endpoint, parse_model_ids, resolve_upstream_request, UpstreamModelsRequest};
-    use jeikcode_config::config::provider::{ModelProfileConfig, ProviderAccountConfig};
+    use super::{
+        models_endpoint, parse_model_ids, resolve_upstream_request, UpstreamModelsRequest,
+    };
     use crate::api_config::update_config;
+    use jeikcode_config::config::provider::{ModelProfileConfig, ProviderAccountConfig};
 
     #[test]
     fn openai_and_responses_use_v1_models() {

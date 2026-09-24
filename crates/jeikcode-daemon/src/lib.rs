@@ -912,9 +912,13 @@ impl ActiveChatRegistry {
         // Clone for waking standby watchers (the original moves into the operation).
         let bus_for_drain = event_bus.clone();
         let mut aliases = Vec::with_capacity(3);
-        for alias in [session_id.as_deref(), request_id.as_deref(), occupancy.as_deref()]
-            .into_iter()
-            .flatten()
+        for alias in [
+            session_id.as_deref(),
+            request_id.as_deref(),
+            occupancy.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
         {
             if !aliases.iter().any(|existing| existing == alias) {
                 aliases.push(alias.to_string());
@@ -1105,11 +1109,7 @@ impl ActiveChatRegistry {
             .and_then(|op| op.admitted_user.clone())
     }
 
-    async fn replay_admitted_user(
-        &self,
-        session_id: &str,
-        tx: &mpsc::UnboundedSender<ChatEvent>,
-    ) {
+    async fn replay_admitted_user(&self, session_id: &str, tx: &mpsc::UnboundedSender<ChatEvent>) {
         let Some(operation_id) = self.operation_for_session(session_id).await else {
             return;
         };
@@ -4192,6 +4192,9 @@ pub struct ModelInfo {
     /// Model's configured context window size in tokens, if known (e.g. 128000, 1000000).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<usize>,
+    /// Model's configured thinking budget in tokens, if set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<u32>,
 }
 
 /// Build the `/models` list from the UNIFIED model catalog (`logical_models`)
@@ -4222,6 +4225,7 @@ fn models_from_config(config: &Config) -> Vec<ModelInfo> {
                 reasoning_effort: p.reasoning_effort.clone(),
                 reasoning_levels: p.effective_reasoning_levels(),
                 context_window: Some(p.context_window).filter(|w| *w > 0),
+                thinking_budget: p.thinking_budget,
             })
         })
         .collect()
@@ -6634,32 +6638,35 @@ async fn chat_pending(
     let (permission, user_input) = state.active_chats.pending_interactive(&session_id).await;
     // Auto never parks on tool approval. A leftover pending_permission.json from
     // Build must not resurrect a ghost card after the user switched to Auto.
-    let auto_mode = live_api::live_current_approval_mode()
-        == crate::approval_mode::ApprovalMode::Auto;
+    let auto_mode =
+        live_api::live_current_approval_mode() == crate::approval_mode::ApprovalMode::Auto;
     let mut permission_json = if auto_mode {
         None
     } else {
         permission.map(|ev| match ev {
-        ChatEvent::PermissionRequest {
-            session_id,
-            tool_name,
-            reason,
-            call_id,
-            arguments,
-        } => serde_json::json!({
-            "type": "permission_request",
-            "session_id": session_id,
-            "tool_name": tool_name,
-            "reason": reason,
-            "call_id": call_id,
-            "arguments": arguments,
-        }),
-        _ => serde_json::Value::Null,
+            ChatEvent::PermissionRequest {
+                session_id,
+                tool_name,
+                reason,
+                call_id,
+                arguments,
+            } => serde_json::json!({
+                "type": "permission_request",
+                "session_id": session_id,
+                "tool_name": tool_name,
+                "reason": reason,
+                "call_id": call_id,
+                "arguments": arguments,
+            }),
+            _ => serde_json::Value::Null,
         })
     };
     if !auto_mode
         && (permission_json.is_none()
-            || permission_json.as_ref().map(|v| v.is_null()).unwrap_or(false))
+            || permission_json
+                .as_ref()
+                .map(|v| v.is_null())
+                .unwrap_or(false))
     {
         if let Some(pending) =
             jeikcode_capabilities::session::SessionManager::load_pending_permission_any_project(
@@ -6798,30 +6805,41 @@ async fn chat_permission(
         // Try recovering and resolving the persisted pending permission from disk.
         use jeikcode_capabilities::session::SessionManager;
         let Some(manager) = SessionManager::find_manager_for_session(&req.session_id) else {
-            return Json(serde_json::json!({ "success": false, "error": "no pending permission for session" }));
+            return Json(
+                serde_json::json!({ "success": false, "error": "no pending permission for session" }),
+            );
         };
         let pending = match manager.load_pending_permission(&req.session_id) {
             Ok(Some(p)) => p,
             _ => {
-                return Json(serde_json::json!({ "success": false, "error": "no pending permission for session" }));
+                return Json(
+                    serde_json::json!({ "success": false, "error": "no pending permission for session" }),
+                );
             }
         };
         let lease = match manager.acquire_lease(&req.session_id) {
             Ok(l) => l,
             Err(e) => {
-                return Json(serde_json::json!({ "success": false, "error": format!("lease conflict: {e}") }));
+                return Json(
+                    serde_json::json!({ "success": false, "error": format!("lease conflict: {e}") }),
+                );
             }
         };
         let (loaded, _) = match manager.load_native_session_for_resume(&lease) {
             Ok(s) => s,
             Err(e) => {
-                return Json(serde_json::json!({ "success": false, "error": format!("failed to load session: {e}") }));
+                return Json(
+                    serde_json::json!({ "success": false, "error": format!("failed to load session: {e}") }),
+                );
             }
         };
         let working_dir = loaded.meta.working_dir.clone();
         let (tool_result_content, is_error) = match decision {
             PermissionDecision::Deny => (
-                format!("[Permission Denied] User declined execution of tool '{}'", pending.tool_name),
+                format!(
+                    "[Permission Denied] User declined execution of tool '{}'",
+                    pending.tool_name
+                ),
                 true,
             ),
             _ => {
@@ -6843,16 +6861,25 @@ async fn chat_permission(
                     let res = tool.execute(&args_str, &ctx).await;
                     (res.content, res.is_error)
                 } else if pending.tool_name.starts_with("mcp__") {
-                    let mcp_reg = state.mcp_pool.registry(std::path::Path::new(&working_dir)).await;
-                    let split = if let Some(pair) = mcp_reg.split_tool_name(&pending.tool_name).await {
-                        Some(pair)
-                    } else {
-                        pending.tool_name.strip_prefix("mcp__")
-                            .and_then(|s| s.split_once("__"))
-                            .map(|(s, t)| (s.to_string(), t.to_string()))
-                    };
+                    let mcp_reg = state
+                        .mcp_pool
+                        .registry(std::path::Path::new(&working_dir))
+                        .await;
+                    let split =
+                        if let Some(pair) = mcp_reg.split_tool_name(&pending.tool_name).await {
+                            Some(pair)
+                        } else {
+                            pending
+                                .tool_name
+                                .strip_prefix("mcp__")
+                                .and_then(|s| s.split_once("__"))
+                                .map(|(s, t)| (s.to_string(), t.to_string()))
+                        };
                     if let Some((server, tool)) = split {
-                        match mcp_reg.call_tool(&server, &tool, pending.arguments.clone()).await {
+                        match mcp_reg
+                            .call_tool(&server, &tool, pending.arguments.clone())
+                            .await
+                        {
                             Ok(content) => (content, false),
                             Err(e) => (e.to_string(), true),
                         }
@@ -6860,7 +6887,10 @@ async fn chat_permission(
                         (format!("MCP tool '{}' not found", pending.tool_name), true)
                     }
                 } else {
-                    (format!("Tool '{}' not found in registry", pending.tool_name), true)
+                    (
+                        format!("Tool '{}' not found in registry", pending.tool_name),
+                        true,
+                    )
                 }
             }
         };
@@ -6873,11 +6903,13 @@ async fn chat_permission(
         native_snapshot.messages.push(tool_msg);
         let message_count = u32::try_from(native_snapshot.messages.len()).unwrap_or(0);
         let updated_at = jeikcode_capabilities::session::now_ms();
-        if let Err(e) = manager.commit_native_runtime_mutation(&lease, &native_snapshot, move |_, meta, _| {
-            meta.message_count = message_count;
-            meta.updated_at = updated_at;
-            Ok(())
-        }) {
+        if let Err(e) =
+            manager.commit_native_runtime_mutation(&lease, &native_snapshot, move |_, meta, _| {
+                meta.message_count = message_count;
+                meta.updated_at = updated_at;
+                Ok(())
+            })
+        {
             tracing::error!("Failed to commit resumed permission decision: {e}");
         }
         manager.clear_pending_permission(&req.session_id);
@@ -6899,10 +6931,16 @@ async fn chat_permission(
                 images: Vec::new(),
                 request_id: None,
             };
-            let admission = match spawn_state.active_chats.admit(Some(&session_id_clone), None).await {
+            let admission = match spawn_state
+                .active_chats
+                .admit(Some(&session_id_clone), None)
+                .await
+            {
                 Ok(a) => a,
                 Err(e) => {
-                    tracing::warn!("Failed to admit continuation turn after permission resolve: {e:?}");
+                    tracing::warn!(
+                        "Failed to admit continuation turn after permission resolve: {e:?}"
+                    );
                     return;
                 }
             };
@@ -8479,7 +8517,9 @@ pub async fn run_server(opts: ServerOpts) -> anyhow::Result<()> {
         println!("  GET    /v1/anthropic/models            - Anthropic-compatible model list (id = account/model)");
         println!("  POST   /v1/chat/completions            - OpenAI Chat Completions (model = account/model)");
         println!("  POST   /v1/responses                   - OpenAI Responses API (model = account/model)");
-        println!("  POST   /v1/messages                    - Anthropic Messages (model = account/model)");
+        println!(
+            "  POST   /v1/messages                    - Anthropic Messages (model = account/model)"
+        );
         println!("  GET    /v1/sessions[?user=key]         - List sessions (by user session key)");
         println!("  GET    /v1/sessions/:id                - Get session by id or user key");
         println!("  GET    /config                         - Get sanitized config");
@@ -9472,10 +9512,7 @@ mod tests {
         let second = registry
             .admit_occupied(None, None, Some("compat-user:alice".into()))
             .await;
-        assert!(matches!(
-            second,
-            Err(ActiveChatAdmissionError::SessionBusy)
-        ));
+        assert!(matches!(second, Err(ActiveChatAdmissionError::SessionBusy)));
         registry.complete(&first.operation_id).await;
         let third = registry
             .admit_occupied(None, None, Some("compat-user:alice".into()))
@@ -9503,11 +9540,7 @@ mod tests {
 
         let second = registry
             .clone()
-            .admit_or_preempt(
-                Some("session-1".into()),
-                None,
-                Duration::from_secs(2),
-            )
+            .admit_or_preempt(Some("session-1".into()), None, Duration::from_secs(2))
             .await
             .expect("preempt should admit after previous turn completes");
         assert_ne!(second.operation_id, first.operation_id);
@@ -9555,7 +9588,11 @@ mod tests {
         let registry = ActiveChatRegistry::default();
         let admission = registry.admit(Some("session-1"), None).await.unwrap();
         registry
-            .record_user_message(&admission.operation_id, "hello".into(), Some(1_700_000_000_000))
+            .record_user_message(
+                &admission.operation_id,
+                "hello".into(),
+                Some(1_700_000_000_000),
+            )
             .await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         registry.replay_admitted_user("session-1", &tx).await;
@@ -9591,9 +9628,11 @@ mod tests {
     async fn stop_and_wait_times_out_if_previous_turn_never_completes() {
         let registry = ActiveChatRegistry::default();
         let first = registry.admit(Some("session-1"), None).await.unwrap();
-        assert!(!registry
-            .stop_and_wait("session-1".into(), Duration::from_millis(30))
-            .await);
+        assert!(
+            !registry
+                .stop_and_wait("session-1".into(), Duration::from_millis(30))
+                .await
+        );
         assert!(first.cancellation.is_cancelled());
         registry.complete(&first.operation_id).await;
     }

@@ -35,12 +35,12 @@ const PROVIDER_TYPE_OPTIONS = [
 
 const REASONING_EFFORT_OPTIONS = [
   { value: '', label: '（默认）' },
+  { value: 'off', label: 'off（关闭思考）' },
   { value: 'low', label: 'low' },
   { value: 'medium', label: 'medium' },
   { value: 'high', label: 'high' },
   { value: 'xhigh', label: 'xhigh' },
   { value: 'max', label: 'max' },
-  { value: 'off', label: 'off（关闭思考）' },
 ];
 
 const REASONING_HISTORY_OPTIONS = [
@@ -818,6 +818,12 @@ function ProviderFormDialog({
   const [supportsVision, setSupportsVision] = useState(Boolean(editing?.supports_vision));
   const [reasoningModel, setReasoningModel] = useState(Boolean(editing?.reasoning_model));
   const [reasoningEffort, setReasoningEffort] = useState(editing?.reasoning_effort ?? '');
+  const [budgetEnabled, setBudgetEnabled] = useState(
+    Boolean(editing?.thinking_budget && editing.thinking_budget > 0),
+  );
+  const [thinkingBudget, setThinkingBudget] = useState<number | ''>(
+    editing?.thinking_budget ?? '',
+  );
   const [reasoningHistory, setReasoningHistory] = useState(
     editing?.reasoning_history === 'exclude' ? 'exclude' : 'include',
   );
@@ -924,11 +930,17 @@ function ProviderFormDialog({
     }
     setSaving(true);
     setError(null);
+    const isOff = reasoningEffort === 'off';
     const advanced = {
       supports_vision: supportsVision,
       reasoning_model: reasoningModel,
       reasoning_effort: reasoningModel && reasoningEffort ? reasoningEffort : null,
       reasoning_history: reasoningModel ? reasoningHistory : null,
+      thinking_enabled: reasoningModel ? !isOff : undefined,
+      thinking_type: isOff ? 'disabled' : (reasoningModel ? 'enabled' : undefined),
+      thinking_budget: isOff
+        ? 0
+        : (reasoningModel && budgetEnabled && thinkingBudget !== '' ? Number(thinkingBudget) : null),
     };
     const accountType = normalizeProviderType(selectedAccount.type);
     try {
@@ -1109,11 +1121,85 @@ function ProviderFormDialog({
           <div class="add-model-reasoning-fields">
             <div class="add-model-field">
               <label class="add-model-label">{t('settings.reasoningEffort')}</label>
-              <Select
-                value={reasoningEffort}
-                options={REASONING_EFFORT_OPTIONS}
-                onChange={(v) => setReasoningEffort(v)}
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ flex: 1 }}>
+                  <Select
+                    value={reasoningEffort}
+                    options={REASONING_EFFORT_OPTIONS}
+                    onChange={(v) => {
+                      setReasoningEffort(v);
+                      if (v === 'off') {
+                        setBudgetEnabled(false);
+                      } else if (v && !thinkingBudget) {
+                        const defaults: Record<string, number> = {
+                          low: 2048,
+                          medium: 5120,
+                          high: 16384,
+                          xhigh: 32768,
+                          max: 65536,
+                        };
+                        if (defaults[v]) setThinkingBudget(defaults[v]);
+                      }
+                    }}
+                  />
+                </div>
+                {reasoningEffort && reasoningEffort !== 'off' && (
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '11px',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={budgetEnabled}
+                      onChange={(e) => {
+                        const checked = (e.target as HTMLInputElement).checked;
+                        setBudgetEnabled(checked);
+                        if (checked && !thinkingBudget) {
+                          const defaults: Record<string, number> = {
+                            low: 2048,
+                            medium: 5120,
+                            high: 16384,
+                            xhigh: 32768,
+                            max: 65536,
+                          };
+                          setThinkingBudget(defaults[reasoningEffort] || 2048);
+                        }
+                      }}
+                    />
+                    √ 预算
+                  </label>
+                )}
+                {budgetEnabled && reasoningEffort !== 'off' && (
+                  <input
+                    type="number"
+                    style={{
+                      width: '80px',
+                      height: '32px',
+                      padding: '2px 6px',
+                      fontSize: '12px',
+                      border: '1px solid var(--app-input-border)',
+                      borderRadius: 'var(--corner-radius-small)',
+                      background: 'var(--app-input-background)',
+                      color: 'var(--app-primary-foreground)',
+                      textAlign: 'right',
+                    }}
+                    min="0"
+                    step="1024"
+                    placeholder="Tokens"
+                    value={thinkingBudget}
+                    onInput={(e) => {
+                      const val = parseInt((e.target as HTMLInputElement).value, 10);
+                      setThinkingBudget(isNaN(val) ? '' : val);
+                    }}
+                  />
+                )}
+              </div>
             </div>
             <div class="add-model-field">
               <label class="add-model-label">{t('settings.reasoningHistory')}</label>

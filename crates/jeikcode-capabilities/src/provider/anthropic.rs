@@ -25,12 +25,12 @@
 use super::reasoning::{ReasoningPolicy, REASONING_PLACEHOLDER};
 use super::retry::{self, RetryPolicy};
 use async_trait::async_trait;
+use futures::stream::BoxStream;
+use futures::StreamExt;
 use jeikcode_kernel::message::{Message, Role};
 use jeikcode_kernel::provider::{ChatOptions, LlmProvider, ReasoningEffort, ToolChoice};
 use jeikcode_kernel::stream::{ProviderError, StreamEvent, TokenUsage};
 use jeikcode_kernel::tool::{ToolCall, ToolDef};
-use futures::stream::BoxStream;
-use futures::StreamExt;
 use serde_json::{json, Map, Value};
 use std::time::Duration;
 
@@ -57,6 +57,8 @@ pub struct AnthropicConfig {
     /// Enable extended thinking. Off by default. When enabled, emits standard Claude 3.7+
     /// `thinking: {type:"enabled", budget_tokens:...}` or adaptive mode if configured.
     pub thinking: bool,
+    /// Explicit thinking enabled/disabled flag from model config.
+    pub thinking_enabled: Option<bool>,
     /// Maximum tokens allocated to the thinking phase (`thinking.budget_tokens`).
     /// Defaults to 10000 (or derived from effort / max_tokens clamp) when thinking is enabled.
     pub thinking_budget: Option<u32>,
@@ -105,6 +107,7 @@ impl AnthropicConfig {
             max_tokens: 4096,
             anthropic_version: "2023-06-01".to_string(),
             thinking: false,
+            thinking_enabled: None,
             thinking_budget: None,
             thinking_type: None,
             reasoning_model: None,
@@ -545,50 +548,74 @@ fn build_request_body(
     // Anthropic rejects extended/adaptive thinking combined with forced tool use.
     // Suppress thinking for this one request; the session config remains unchanged,
     // so the following round resumes thinking automatically.
-    let thinking_enabled = (cfg.thinking || policy == ReasoningPolicy::Include)
-        && cfg.thinking_type.as_deref() != Some("disabled")
-        && !forces_tool_use;
-    if thinking_enabled {
-        if cfg.thinking_type.as_deref() == Some("adaptive") {
-            body.insert("thinking".into(), json!({ "type": "adaptive" }));
-        } else {
-            let mut budget = if let Some(b) = cfg.thinking_budget {
-                b
-            } else if let Some(effort) = &options.reasoning_effort {
-                match effort {
-                    ReasoningEffort::Low => 2048,
-                    ReasoningEffort::Medium => 8192,
-                    ReasoningEffort::High => 16384,
-                    ReasoningEffort::XHigh => 24576,
-                    ReasoningEffort::Max => 32768,
-                    ReasoningEffort::Custom(ref s) => s.parse::<u32>().unwrap_or(10000),
-                }
-            } else {
-                10000
-            };
+    let is_effort_off = options.reasoning_effort.as_ref().is_some_and(|e| {
+        matches!(e, ReasoningEffort::Off)
+            || e.as_str().eq_ignore_ascii_case("off")
+            || e.as_str().eq_ignore_ascii_case("none")
+    });
 
-            // Anthropic requires budget_tokens < max_tokens. Short auxiliary
-            // calls (session title) pass a small max_tokens; without clamping
-            // the default 10k budget 400s the whole request.
-            if max_tokens > 1 {
-                let upper = max_tokens.saturating_sub(1);
-                if budget >= max_tokens {
-                    budget = (max_tokens * 3 / 4).clamp(1, upper);
+    let is_thinking_disabled = is_effort_off
+        || cfg.thinking_type.as_deref() == Some("disabled")
+        || cfg.thinking_enabled == Some(false);
+
+    if is_thinking_disabled {
+        body.insert(
+            "thinking".into(),
+            json!({
+                "type": "disabled",
+                "budget_tokens": 0,
+            }),
+        );
+    } else {
+        let thinking_enabled =
+            (cfg.thinking || policy == ReasoningPolicy::Include) && !forces_tool_use;
+        if thinking_enabled {
+            if cfg.thinking_type.as_deref() == Some("adaptive") {
+                body.insert("thinking".into(), json!({ "type": "adaptive" }));
+            } else {
+                let mut budget = if let Some(b) = cfg.thinking_budget {
+                    b
+                } else if let Some(effort) = &options.reasoning_effort {
+                    match effort {
+                        ReasoningEffort::Off => 0,
+                        ReasoningEffort::Low => 2048,
+                        ReasoningEffort::Medium => 5120,
+                        ReasoningEffort::High => 16384,
+                        ReasoningEffort::XHigh => 32768,
+                        ReasoningEffort::Max => 65536,
+                        ReasoningEffort::Custom(ref s) => s.parse::<u32>().unwrap_or(10000),
+                    }
                 } else {
-                    budget = budget.clamp(1, upper);
+                    10000
+                };
+
+                // Anthropic requires budget_tokens < max_tokens. Short auxiliary
+                // calls (session title) pass a small max_tokens; without clamping
+                // the default 10k budget 400s the whole request.
+                if max_tokens > 1 {
+                    let upper = max_tokens.saturating_sub(1);
+                    if budget >= max_tokens {
+                        budget = (max_tokens * 3 / 4).clamp(1, upper);
+                    } else {
+                        budget = budget.clamp(1, upper);
+                    }
                 }
+                body.insert(
+                    "thinking".into(),
+                    json!({
+                        "type": "enabled",
+                        "budget_tokens": budget,
+                    }),
+                );
             }
-            body.insert(
-                "thinking".into(),
-                json!({
-                    "type": "enabled",
-                    "budget_tokens": budget,
-                }),
-            );
         }
     }
-    if let Some(effort) = super::openai_compat::resolve_wire_effort(model, options) {
-        body.insert("output_config".into(), json!({ "effort": effort }));
+    if !is_thinking_disabled {
+        if let Some(effort) = super::openai_compat::resolve_wire_effort(model, options) {
+            if !effort.eq_ignore_ascii_case("off") && !effort.eq_ignore_ascii_case("none") {
+                body.insert("output_config".into(), json!({ "effort": effort }));
+            }
+        }
     }
     if !tools.is_empty() {
         let mut t: Vec<Value> = tools
@@ -1784,6 +1811,24 @@ mod tests {
         assert_eq!(body["thinking"]["type"], "enabled");
         // default budget clamped to max_tokens - 1 (or 75%): 8192 * 3 / 4 = 6144
         assert_eq!(body["thinking"]["budget_tokens"], 6144);
+    }
+
+    #[test]
+    fn thinking_request_body_emits_disabled_when_off() {
+        let mut c = cfg();
+        c.thinking = true;
+        c.reasoning_policy = Some(ReasoningPolicy::Include);
+        let mut opts = ChatOptions::default();
+        opts.reasoning_effort = Some(ReasoningEffort::Off);
+        let body = build_request_body("claude-opus-4-8", &[Message::user("hi")], &[], &opts, &c);
+        assert_eq!(
+            body["thinking"],
+            json!({
+                "type": "disabled",
+                "budget_tokens": 0,
+            })
+        );
+        assert!(body.get("output_config").is_none());
     }
 
     #[test]

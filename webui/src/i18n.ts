@@ -119,11 +119,14 @@ const zh = {
   // Reasoning effort selector
   'effort.label': '强度',
   'effort.default': '默认',
+  'effort.off': 'Off（关闭思考）',
   'effort.low': 'Low',
   'effort.medium': 'Medium',
   'effort.high': 'High',
   'effort.xhigh': 'XHigh',
   'effort.max': 'Max',
+  'effort.budgetTooltip': '勾选自定义思考预算',
+  'model.searchPlaceholder': '搜索提供商或模型...',
 
   // Chat
   'chat.startHint': '发送消息开始对话…',
@@ -583,11 +586,14 @@ const en: Record<MsgKey, string> = {
   // Reasoning effort selector
   'effort.label': 'Effort',
   'effort.default': 'Default',
+  'effort.off': 'Off (Disabled)',
   'effort.low': 'Low',
   'effort.medium': 'Medium',
   'effort.high': 'High',
   'effort.xhigh': 'XHigh',
   'effort.max': 'Max',
+  'effort.budgetTooltip': 'Set custom thinking budget',
+  'model.searchPlaceholder': 'Search providers or models...',
 
   'chat.startHint': 'Send a message to start a conversation…',
   'chat.continueHint': 'Send a message to continue this session',

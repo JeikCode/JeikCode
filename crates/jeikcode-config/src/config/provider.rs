@@ -226,11 +226,30 @@ pub fn resolve_is_reasoning_model(explicit: Option<bool>, model: &str, base_url:
 pub fn default_reasoning_levels_for(model: &str) -> Vec<String> {
     let m = model.to_ascii_lowercase();
     if m.contains("grok") {
-        vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()]
+        vec![
+            "off".into(),
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "xhigh".into(),
+        ]
     } else if m.contains("deepseek") || m.contains("v4") {
-        vec!["low".into(), "medium".into(), "high".into(), "max".into()]
+        vec![
+            "off".into(),
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "max".into(),
+        ]
     } else {
-        vec!["low".into(), "medium".into(), "high".into()]
+        vec![
+            "off".into(),
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "xhigh".into(),
+            "max".into(),
+        ]
     }
 }
 
@@ -993,7 +1012,7 @@ output_per_million = 0
         for name in ["grok-4.6", "grok-4.5", "x-ai/grok-4", "GROK-beta"] {
             assert_eq!(
                 default_reasoning_levels_for(name),
-                vec!["low", "medium", "high", "xhigh"]
+                vec!["off", "low", "medium", "high", "xhigh"]
             );
             assert_eq!(default_reasoning_effort_for(name).as_deref(), Some("high"));
         }
@@ -1022,7 +1041,7 @@ output_per_million = 0
         };
         assert_eq!(
             cfg.effective_reasoning_levels(),
-            vec!["low", "medium", "high", "xhigh"]
+            vec!["off", "low", "medium", "high", "xhigh"]
         );
     }
 

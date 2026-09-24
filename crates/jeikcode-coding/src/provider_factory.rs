@@ -114,11 +114,21 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
                     .chat_options
                     .max_tokens
                     .unwrap_or_else(|| default_max_tokens(cfg.context_window));
+                ac.thinking_enabled = cfg.thinking_enabled;
                 ac.thinking = cfg
                     .thinking_enabled
                     .unwrap_or_else(|| cfg.reasoning_model.unwrap_or(false));
                 ac.thinking_budget = cfg.thinking_budget;
                 ac.thinking_type = cfg.thinking_type.clone();
+                if cfg.chat_options.reasoning_effort.as_ref().is_some_and(|e| {
+                    matches!(e, jeikcode_kernel::provider::ReasoningEffort::Off)
+                        || e.as_str().eq_ignore_ascii_case("off")
+                        || e.as_str().eq_ignore_ascii_case("none")
+                }) {
+                    ac.thinking_enabled = Some(false);
+                    ac.thinking = false;
+                    ac.thinking_type = Some("disabled".to_string());
+                }
                 ac.reasoning_model = cfg.reasoning_model;
                 ac.reasoning_policy =
                     ReasoningPolicy::from_config(cfg.reasoning_history.as_deref())
@@ -151,6 +161,13 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
                 gc.idle_timeout = cfg.stream_timeout;
                 gc.max_tokens = cfg.chat_options.max_tokens;
                 gc.thinking_enabled = cfg.thinking_enabled;
+                if cfg.chat_options.reasoning_effort.as_ref().is_some_and(|e| {
+                    matches!(e, jeikcode_kernel::provider::ReasoningEffort::Off)
+                        || e.as_str().eq_ignore_ascii_case("off")
+                        || e.as_str().eq_ignore_ascii_case("none")
+                }) {
+                    gc.thinking_enabled = Some(false);
+                }
                 gc.thinking_budget = cfg.thinking_budget;
                 gc.reasoning_model = cfg.reasoning_model;
                 gc.reasoning_policy =

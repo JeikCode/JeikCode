@@ -2768,30 +2768,47 @@ pub(crate) struct LiveReasoningEffortReq {
     /// 目标 provider；None 时取当前默认 provider。
     #[serde(default)]
     pub provider: Option<String>,
-    /// "high" | "max" | null（清除 → 用模型自身默认）。其他取值拒绝。
+    /// 思考等级："off" | "low" | "medium" | "high" | "xhigh" | "max" | null（恢复默认）。
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// 自定义思考预算（可选）。
+    #[serde(default)]
+    pub thinking_budget: Option<u32>,
+    /// 显式清空思考预算。
+    #[serde(default)]
+    pub clear_thinking_budget: bool,
 }
 
-/// POST /live/reasoning_effort — webui 设置 DeepSeek V4 的 reasoning_effort。
+/// POST /live/reasoning_effort — webui 设置模型的 reasoning_effort 与 thinking_budget。
 ///
-/// 与 /live/provider 同源：持久化进目标 provider 的 `config.reasoning_effort`，
+/// 与 /live/provider 同源：持久化进目标 provider 的 `config.reasoning_effort` 等字段，
 /// 下一轮 turn 经 `build_turn_parts` → `create_provider` 自动生效——live 与
-/// /chat 两条路径都现读 config，故两端都会跟随。只有 deepseek-v4 系模型真正
-/// 消费该字段（见 effort_control_applicable：模型自定义档位或名称启发），webui 已据此门控
-/// UI；服务端仅校验取值合法。
+/// /chat 两条路径都现读 config，故两端都会跟随。
 pub(crate) async fn live_reasoning_effort(
     State(state): State<AppState>,
     Json(req): Json<LiveReasoningEffortReq>,
 ) -> impl IntoResponse {
-    let effort = match req.reasoning_effort.as_deref().map(str::trim) {
-        None | Some("") => None,
+    let effort_raw = req.reasoning_effort.as_deref().map(str::trim);
+    let (effort, thinking_enabled, thinking_type, budget_val) = match effort_raw {
+        None | Some("") => (None, None, None, None),
         Some(v) => {
             let lower = v.to_ascii_lowercase();
-            if lower == "none" || lower == "off" || lower == "default" {
-                None
+            if lower == "none" || lower == "off" {
+                (
+                    Some("off".to_string()),
+                    Some(false),
+                    Some("disabled".to_string()),
+                    Some(0),
+                )
+            } else if lower == "default" {
+                (None, None, None, None)
             } else {
-                Some(v.to_string())
+                (
+                    Some(v.to_string()),
+                    Some(true),
+                    Some("enabled".to_string()),
+                    req.thinking_budget,
+                )
             }
         }
     };
@@ -2800,6 +2817,7 @@ pub(crate) async fn live_reasoning_effort(
     let mut target = String::new();
     let mut previous_effort = None;
     let mut provider_missing = false;
+    let clear_budget = req.clear_thinking_budget;
     let commit = match store.update(|config| {
         target = requested
             .clone()
@@ -2810,6 +2828,27 @@ pub(crate) async fn live_reasoning_effort(
         let found = config.update_selection_reasoning(&target, |r| {
             previous_effort = r.reasoning_effort.clone();
             *r.reasoning_effort = effort.clone();
+            if thinking_enabled.is_some() {
+                *r.thinking_enabled = thinking_enabled;
+            } else if effort_raw == Some("default")
+                || effort_raw == Some("")
+                || effort_raw.is_none()
+            {
+                *r.thinking_enabled = None;
+            }
+            if thinking_type.is_some() {
+                *r.thinking_type = thinking_type;
+            } else if effort_raw == Some("default")
+                || effort_raw == Some("")
+                || effort_raw.is_none()
+            {
+                *r.thinking_type = None;
+            }
+            if clear_budget {
+                *r.thinking_budget = None;
+            } else if let Some(b) = budget_val {
+                *r.thinking_budget = Some(b);
+            }
         });
         if !found {
             provider_missing = true;

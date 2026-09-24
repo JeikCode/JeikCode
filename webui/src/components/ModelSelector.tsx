@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect, useRef, useMemo } from 'preact/hooks';
 import { getModels, ModelInfo, postLiveReasoningEffort } from '../api';
 import { useT } from '../settings';
 import { MsgKey } from '../i18n';
-import { modelAliasLabel, modelSourceLabel } from '../lib/modelLabel';
+import { modelAliasLabel } from '../lib/modelLabel';
 
 function areModelsEqual(a: ModelInfo[], b: ModelInfo[]): boolean {
   if (a.length !== b.length) return false;
@@ -16,6 +16,7 @@ function areModelsEqual(a: ModelInfo[], b: ModelInfo[]): boolean {
       ma.is_default !== mb.is_default ||
       ma.effort_applicable !== mb.effort_applicable ||
       ma.reasoning_effort !== mb.reasoning_effort ||
+      ma.thinking_budget !== mb.thinking_budget ||
       JSON.stringify(ma.reasoning_levels) !== JSON.stringify(mb.reasoning_levels)
     ) {
       return false;
@@ -23,6 +24,45 @@ function areModelsEqual(a: ModelInfo[], b: ModelInfo[]): boolean {
   }
   return true;
 }
+
+/** 提取模型归属的提供商分组名（优先 account，其次 prefix 或 provider_type）。 */
+export function getProviderGroup(m: ModelInfo): string {
+  if (m.account && m.account.trim()) return m.account.trim();
+  if (m.provider.includes('/')) {
+    const parts = m.provider.split('/');
+    if (parts[0] && parts[0].trim()) return parts[0].trim();
+  }
+  if (m.provider_type && m.provider_type.trim()) return m.provider_type.trim();
+  return 'default';
+}
+
+/** 搜索关键词高亮组件。 */
+function HighlightText({ text, query }: { text: string; query: string }) {
+  if (!query || !query.trim()) return <span>{text}</span>;
+  const q = query.trim().toLowerCase();
+  const lower = text.toLowerCase();
+  const idx = lower.indexOf(q);
+  if (idx === -1) return <span>{text}</span>;
+  const before = text.slice(0, idx);
+  const match = text.slice(idx, idx + q.length);
+  const after = text.slice(idx + q.length);
+  return (
+    <span>
+      {before}
+      <mark class="search-kw-highlight">{match}</mark>
+      <HighlightText text={after} query={query} />
+    </span>
+  );
+}
+
+/** 各思考等级的默认预算数值（单位 Tokens）。 */
+const DEFAULT_EFFORT_BUDGETS: Record<string, number> = {
+  low: 2048,
+  medium: 5120, // 5 * 1024 = 5120
+  high: 16384,
+  xhigh: 32768,
+  max: 65536,
+};
 
 export function ModelSelector({
   value,
@@ -37,9 +77,21 @@ export function ModelSelector({
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [open, setOpen] = useState(false);
   const [effortOpen, setEffortOpen] = useState(false);
-  // undefined = "show the provider's persisted value"; a string/null is a
-  // local override after the user picks one (config isn't re-fetched).
+
+  // 搜索关键字
+  const [searchQuery, setSearchQuery] = useState('');
+  // 当前悬停/选中的提供商
+  const [hoveredProvider, setHoveredProvider] = useState<string | null>(null);
+
+  // 本地暂存的 effort 与 budget override
   const [effortOverride, setEffortOverride] = useState<string | null | undefined>(undefined);
+  const [budgetOverride, setBudgetOverride] = useState<number | null | undefined>(undefined);
+
+  // 思考强度每一项是否展开了“自定义预算”输入框
+  const [budgetChecked, setBudgetChecked] = useState<Record<string, boolean>>({});
+  // 思考强度每一项输入的自定义预算数值
+  const [budgetInputs, setBudgetInputs] = useState<Record<string, number>>({});
+
   const ref = useRef<HTMLDivElement>(null);
   const effortRef = useRef<HTMLDivElement>(null);
 
@@ -54,15 +106,17 @@ export function ModelSelector({
     let active = true;
     const refresh = () => {
       if (openRef.current || effortOpenRef.current) return;
-      getModels().then((next) => {
-        if (!active) return;
-        if (openRef.current || effortOpenRef.current) return;
-        if (!areModelsEqual(modelsRef.current, next)) {
-          setModels(next);
-          const defaultModel = next.find((model) => model.is_default) ?? next[0];
-          if (defaultModel) onDefaultChange?.(defaultModel.provider);
-        }
-      }).catch(() => {});
+      getModels()
+        .then((next) => {
+          if (!active) return;
+          if (openRef.current || effortOpenRef.current) return;
+          if (!areModelsEqual(modelsRef.current, next)) {
+            setModels(next);
+            const defaultModel = next.find((model) => model.is_default) ?? next[0];
+            if (defaultModel) onDefaultChange?.(defaultModel.provider);
+          }
+        })
+        .catch(() => {});
     };
     refresh();
     const timer = window.setInterval(refresh, 2_000);
@@ -76,116 +130,485 @@ export function ModelSelector({
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [onDefaultChange]);
+
   useEffect(() => {
     if (!open && !effortOpen) return;
     const h = (e: MouseEvent) => {
       const tgt = e.target as Node;
-      if (ref.current && !ref.current.contains(tgt)) setOpen(false);
-      if (effortRef.current && !effortRef.current.contains(tgt)) setEffortOpen(false);
+      if (ref.current && !ref.current.contains(tgt)) {
+        setOpen(false);
+      }
+      if (effortRef.current && !effortRef.current.contains(tgt)) {
+        setEffortOpen(false);
+      }
     };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [open, effortOpen]);
-  const current = models.find((m) => m.provider === value) ?? models.find((m) => m.is_default) ?? models[0];
-  // Switching models resets the effort display back to the new model's
-  // persisted value (and hides the selector entirely for non-effort models).
-  useEffect(() => { setEffortOverride(undefined); }, [current?.provider]);
-  const effort = effortOverride !== undefined ? effortOverride : (current?.reasoning_effort ?? null);
 
-  const currentLevels = (current?.reasoning_levels && current.reasoning_levels.length > 0)
-    ? current.reasoning_levels
-    : ['low', 'medium', 'high'];
+  const current =
+    models.find((m) => m.provider === value) ??
+    models.find((m) => m.is_default) ??
+    models[0];
 
-  const effortOptions: { val: string | null; label: string }[] = [
-    { val: null, label: t('effort.default') },
-    ...currentLevels.map((lvl) => {
-      const key = `effort.${lvl.toLowerCase()}` as MsgKey;
-      let label = lvl;
-      try {
-        const translated = t(key);
-        if (translated && translated !== key) {
-          label = translated;
+  useEffect(() => {
+    setEffortOverride(undefined);
+    setBudgetOverride(undefined);
+    // 初始化当前模型的 budget 状态
+    if (current?.thinking_budget) {
+      const eff = current.reasoning_effort?.toLowerCase() || 'medium';
+      setBudgetChecked({ [eff]: true });
+      setBudgetInputs({ [eff]: current.thinking_budget });
+    } else {
+      setBudgetChecked({});
+      setBudgetInputs({});
+    }
+  }, [current?.provider, current?.thinking_budget]);
+
+  const effort =
+    effortOverride !== undefined
+      ? effortOverride
+      : (current?.reasoning_effort ?? null);
+
+  const activeBudget =
+    budgetOverride !== undefined
+      ? budgetOverride
+      : (current?.thinking_budget ?? null);
+
+  // 提供商与模型按提供商分组
+  const providerGroups = useMemo(() => {
+    const map = new Map<string, ModelInfo[]>();
+    for (const m of models) {
+      const p = getProviderGroup(m);
+      const list = map.get(p) ?? [];
+      list.push(m);
+      map.set(p, list);
+    }
+    return map;
+  }, [models]);
+
+  // 根据搜索词筛选提供商和模型
+  const filteredGroups = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) {
+      return providerGroups;
+    }
+    const result = new Map<string, ModelInfo[]>();
+    for (const [provider, list] of providerGroups.entries()) {
+      const providerMatches = provider.toLowerCase().includes(q);
+      const matchedModels = list.filter((m) => {
+        const alias = modelAliasLabel(m).toLowerCase();
+        const wire = m.model.toLowerCase();
+        return alias.includes(q) || wire.includes(q);
+      });
+      if (providerMatches || matchedModels.length > 0) {
+        // 如果提供商名字匹配，保留其所有模型（匹配的排前面），否则仅保留匹配的模型
+        if (providerMatches) {
+          result.set(provider, list);
+        } else {
+          result.set(provider, matchedModels);
         }
-      } catch {
-        label = lvl;
       }
-      return { val: lvl, label };
-    }),
-  ];
+    }
+    return result;
+  }, [providerGroups, searchQuery]);
+
+  // 打开面板时，确定初始高亮/选中的提供商
+  useEffect(() => {
+    if (open) {
+      const currentProviderGroup = current ? getProviderGroup(current) : null;
+      if (currentProviderGroup && filteredGroups.has(currentProviderGroup)) {
+        setHoveredProvider(currentProviderGroup);
+      } else {
+        const first = filteredGroups.keys().next().value;
+        setHoveredProvider(first ?? null);
+      }
+    }
+  }, [open, filteredGroups]);
+
+  // 保证 hoveredProvider 有效
+  const activeProvider = useMemo(() => {
+    if (hoveredProvider && filteredGroups.has(hoveredProvider)) {
+      return hoveredProvider;
+    }
+    return filteredGroups.keys().next().value ?? null;
+  }, [hoveredProvider, filteredGroups]);
+
+  const activeModels = activeProvider ? filteredGroups.get(activeProvider) ?? [] : [];
+
+  // 思考强度标准候选阶梯：默认、off、low、medium、high、xhigh、max
+  const STANDARD_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const currentLevels = useMemo(() => {
+    const set = new Set(STANDARD_LEVELS);
+    if (current?.reasoning_levels && Array.isArray(current.reasoning_levels)) {
+      for (const lvl of current.reasoning_levels) {
+        if (lvl) set.add(lvl.toLowerCase());
+      }
+    }
+    return Array.from(set);
+  }, [current?.reasoning_levels]);
+
+  const effortOptions = useMemo(() => {
+    return [
+      { val: null, label: t('effort.default'), hasBudget: false },
+      ...currentLevels.map((lvl) => {
+        const lower = lvl.toLowerCase();
+        const hasBudget = lower !== 'off';
+        const key = `effort.${lower}` as MsgKey;
+        let label = lvl;
+        try {
+          const translated = t(key);
+          if (translated && translated !== key) {
+            label = translated;
+          }
+        } catch {
+          label = lvl;
+        }
+        return {
+          val: lower,
+          label,
+          hasBudget,
+          defaultBudget: DEFAULT_EFFORT_BUDGETS[lower] ?? 2048,
+        };
+      }),
+    ];
+  }, [currentLevels, t]);
 
   const effortLabel = (v: string | null): string => {
     if (!v) return t('effort.default');
-    const match = effortOptions.find((x) => x.val?.toLowerCase() === v.toLowerCase());
-    return match ? match.label : v;
+    const lower = v.toLowerCase();
+    const match = effortOptions.find((x) => x.val === lower);
+    let name = match ? match.label : v;
+    if (activeBudget && activeBudget > 0 && lower !== 'off') {
+      const k = activeBudget >= 1024 ? `${Math.round(activeBudget / 1024)}k` : `${activeBudget}`;
+      return `${name} · ${k}`;
+    }
+    return name;
   };
-  const selectEffort = (v: string | null) => {
-    const previous = effort;
-    setEffortOverride(v);
+
+  const handleSelectEffort = (
+    lvl: string | null,
+    budgetVal?: number | null,
+    clearBudget?: boolean,
+  ) => {
+    const prevEffort = effort;
+    const prevBudget = activeBudget;
+    setEffortOverride(lvl);
+    if (lvl === 'off' || lvl === null || clearBudget) {
+      setBudgetOverride(null);
+    } else if (budgetVal !== undefined) {
+      setBudgetOverride(budgetVal);
+    }
     setEffortOpen(false);
+
     if (current) {
-      void postLiveReasoningEffort(v, current.provider).catch((error) => {
-        setEffortOverride(previous);
-        console.error('Failed to update reasoning effort', error);
+      void postLiveReasoningEffort(
+        lvl,
+        current.provider,
+        budgetVal ?? null,
+        clearBudget,
+      ).catch((err) => {
+        setEffortOverride(prevEffort);
+        setBudgetOverride(prevBudget);
+        console.error('Failed to update reasoning effort', err);
       });
     }
   };
-  // 展示格式：别名（提供商/modelId）。别名=selection id，括号内=账号/线上模型 ID。
+
+  const handleToggleBudgetCheck = (lvl: string, e: MouseEvent) => {
+    e.stopPropagation();
+    const nextChecked = !budgetChecked[lvl];
+    setBudgetChecked((prev) => ({ ...prev, [lvl]: nextChecked }));
+    if (nextChecked) {
+      const budgetVal = budgetInputs[lvl] || DEFAULT_EFFORT_BUDGETS[lvl] || 2048;
+      setBudgetInputs((prev) => ({ ...prev, [lvl]: budgetVal }));
+      handleSelectEffort(lvl, budgetVal, false);
+    } else {
+      handleSelectEffort(lvl, null, true);
+    }
+  };
+
+  const handleBudgetInputChange = (lvl: string, rawVal: string) => {
+    const num = parseInt(rawVal, 10);
+    const val = isNaN(num) || num < 0 ? 0 : num;
+    setBudgetInputs((prev) => ({ ...prev, [lvl]: val }));
+  };
+
+  const handleBudgetInputCommit = (lvl: string, overrideVal?: number) => {
+    const budgetVal =
+      overrideVal !== undefined
+        ? overrideVal
+        : (budgetInputs[lvl] !== undefined ? budgetInputs[lvl] : DEFAULT_EFFORT_BUDGETS[lvl] || 2048);
+    handleSelectEffort(lvl, budgetVal, false);
+  };
+
   return (
     <div class="model-controls">
+      {/* 思考强度选择器 */}
       {current?.effort_applicable && (
         <div class="model-selector effort-selector model-selector-up" ref={effortRef}>
           <button
-            class="model-selector-trigger"
-            onClick={() => { setEffortOpen((o) => !o); setOpen(false); }}
+            class={'model-selector-trigger effort-capsule-trigger' + (effortOpen ? ' is-active' : '')}
+            onClick={() => {
+              setEffortOpen((o) => !o);
+              setOpen(false);
+            }}
             type="button"
             title={t('effort.label')}
           >
             <span class="effort-prefix">{t('effort.label')}</span>
-            <span class="model-selector-label">{effortLabel(effort)}</span>
-            <span class="model-selector-chevron">▾</span>
+            <span class="model-selector-label effort-value-label">{effortLabel(effort)}</span>
+            <span class={'model-selector-chevron' + (effortOpen ? ' rotated' : '')}>▾</span>
           </button>
+
           {effortOpen && (
-            <div class="model-dropdown">
-              {effortOptions.map((o) => (
-                <button
-                  key={o.val ?? 'default'}
-                  class={'model-item' + (o.val === effort || (o.val?.toLowerCase() === effort?.toLowerCase()) ? ' active' : '')}
-                  type="button"
-                  onClick={() => selectEffort(o.val)}
-                >
-                  <span class="model-item-model">{o.label}</span>
-                </button>
-              ))}
+            <div class="model-dropdown effort-dropdown">
+              <div class="effort-menu-list">
+                {effortOptions.map((o) => {
+                  const isCurrent =
+                    (!o.val && !effort) ||
+                    (o.val && effort && o.val.toLowerCase() === effort.toLowerCase());
+                  const isChecked = Boolean(o.val && budgetChecked[o.val]);
+                  const currentInputVal =
+                    o.val && budgetInputs[o.val] !== undefined
+                      ? budgetInputs[o.val]
+                      : o.defaultBudget;
+
+                  return (
+                    <div
+                      key={o.val ?? 'default'}
+                      class={'effort-menu-row' + (isCurrent ? ' active' : '')}
+                    >
+                      <button
+                        type="button"
+                        class="effort-row-main-btn"
+                        onClick={() => {
+                          if (o.val === 'off') {
+                            handleSelectEffort('off', 0, true);
+                          } else if (o.val === null) {
+                            handleSelectEffort(null, null, true);
+                          } else {
+                            if (isChecked) {
+                              handleSelectEffort(o.val, currentInputVal, false);
+                            } else {
+                              handleSelectEffort(o.val, null, true);
+                            }
+                          }
+                        }}
+                      >
+                        <span class="effort-row-name">{o.label}</span>
+                        {isCurrent && <span class="effort-check-icon">✓</span>}
+                      </button>
+
+                      {/* 预算勾选框与展开输入框 */}
+                      {o.hasBudget && o.val && (
+                        <div class="effort-budget-toggle-wrapper">
+                          <label
+                            class={'effort-budget-checkbox-label' + (isChecked ? ' checked' : '')}
+                            title={t('effort.budgetTooltip') || '勾选自定义思考预算'}
+                            onClick={(e) => handleToggleBudgetCheck(o.val!, e)}
+                          >
+                            <input
+                              type="checkbox"
+                              class="effort-budget-checkbox"
+                              checked={isChecked}
+                              onChange={() => {}}
+                            />
+                            <span class="effort-budget-tag">√ 预算</span>
+                          </label>
+
+                          {/* 勾选后向右展开输入框 */}
+                          {isChecked && (
+                            <div class="effort-budget-input-popout" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="number"
+                                class="effort-budget-input"
+                                min="0"
+                                step="1024"
+                                value={currentInputVal}
+                                onInput={(e) =>
+                                  handleBudgetInputChange(o.val!, (e.target as HTMLInputElement).value)
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    const raw = (e.target as HTMLInputElement).value;
+                                    const num = parseInt(raw, 10);
+                                    const val = isNaN(num) || num < 0 ? 0 : num;
+                                    setBudgetInputs((prev) => ({ ...prev, [o.val!]: val }));
+                                    handleBudgetInputCommit(o.val!, val);
+                                  }
+                                }}
+                                onBlur={(e) => {
+                                  const raw = (e.target as HTMLInputElement).value;
+                                  const num = parseInt(raw, 10);
+                                  const val = isNaN(num) || num < 0 ? 0 : num;
+                                  setBudgetInputs((prev) => ({ ...prev, [o.val!]: val }));
+                                  handleBudgetInputCommit(o.val!, val);
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
       )}
+
+      {/* 模型选择器：现代胶囊多级筛选框 */}
       <div class="model-selector model-selector-up" ref={ref}>
-        <button class="model-selector-trigger" onClick={() => { setOpen((o) => !o); setEffortOpen(false); }} type="button">
+        <button
+          class={'model-selector-trigger model-capsule-trigger' + (open ? ' is-active' : '')}
+          onClick={() => {
+            setOpen((o) => !o);
+            setEffortOpen(false);
+          }}
+          type="button"
+          title={current ? `${modelAliasLabel(current)} (${getProviderGroup(current)})` : t('model.label')}
+        >
           {current ? (
-            <>
-              <span class="model-selector-label">{modelAliasLabel(current)}</span>
-              <span class="model-selector-provider">{modelSourceLabel(current)}</span>
-            </>
+            <div class="model-capsule-content">
+              <span class="model-capsule-name">{modelAliasLabel(current)}</span>
+              <span class="model-capsule-provider-badge">{getProviderGroup(current)}</span>
+            </div>
           ) : (
             <span class="model-selector-label">{t('model.label')}</span>
           )}
-          <span class="model-selector-chevron">▾</span>
+          <span class={'model-selector-chevron' + (open ? ' rotated' : '')}>▾</span>
         </button>
+
         {open && (
-          <div class="model-dropdown">
-            {models.map((m) => (
-              <button
-                key={m.provider}
-                class={'model-item' + (m.provider === (value ?? current?.provider) ? ' active' : '')}
-                type="button"
-                title={`${modelAliasLabel(m)} (${modelSourceLabel(m)})`}
-                onClick={() => { onChange(m.provider); setOpen(false); }}
-              >
-                <span class="model-item-model">{modelAliasLabel(m)}</span>
-                <span class="model-item-provider">{modelSourceLabel(m)}</span>
-              </button>
-            ))}
+          <div class="model-cascade-dropdown">
+            {/* 顶部搜索框：支持提供商与模型共同搜索 */}
+            <div class="model-search-header">
+              <span class="model-search-icon" aria-hidden="true">
+                <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+                  <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/>
+                </svg>
+              </span>
+              <input
+                type="text"
+                class="model-search-input"
+                placeholder={t('model.searchPlaceholder') || '搜索提供商或模型...'}
+                value={searchQuery}
+                onInput={(e) => setSearchQuery((e.target as HTMLInputElement).value)}
+                autoFocus
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  class="model-search-clear"
+                  onClick={() => setSearchQuery('')}
+                  title="清空"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* 多级筛选级联区域 */}
+            <div class="model-cascade-body">
+              {/* 左栏：提供商列表 */}
+              <div class="model-cascade-providers-column">
+                <div class="model-column-title">
+                  <span>提供商</span>
+                  <span class="model-count-tag">{filteredGroups.size}</span>
+                </div>
+                <div class="model-provider-list">
+                  {Array.from(filteredGroups.keys()).map((pGroup) => {
+                    const groupModels = filteredGroups.get(pGroup) ?? [];
+                    const isHovered = activeProvider === pGroup;
+                    const hasSelectedModel = groupModels.some(
+                      (m) => m.provider === (value ?? current?.provider),
+                    );
+
+                    return (
+                      <button
+                        key={pGroup}
+                        type="button"
+                        class={
+                          'model-provider-pill' +
+                          (isHovered ? ' hovered' : '') +
+                          (hasSelectedModel ? ' contains-active' : '')
+                        }
+                        onMouseEnter={() => setHoveredProvider(pGroup)}
+                        onClick={() => setHoveredProvider(pGroup)}
+                      >
+                        <span class="model-provider-pill-left">
+                          {hasSelectedModel && <span class="model-active-indicator" />}
+                          <span class="model-provider-pill-name">
+                            <HighlightText text={pGroup} query={searchQuery} />
+                          </span>
+                        </span>
+                        <span class="model-provider-pill-count">{groupModels.length}</span>
+                      </button>
+                    );
+                  })}
+                  {filteredGroups.size === 0 && (
+                    <div class="model-empty-hint">未找到匹配的提供商</div>
+                  )}
+                </div>
+              </div>
+
+              {/* 右栏：当前提供商下的所有模型列表 */}
+              <div class="model-cascade-models-column">
+                <div class="model-column-title">
+                  <span>{activeProvider || '模型'}</span>
+                  <span class="model-count-tag">{activeModels.length}</span>
+                </div>
+                <div class="model-models-list">
+                  {activeModels.map((m) => {
+                    const isSelected = m.provider === (value ?? current?.provider);
+                    const alias = modelAliasLabel(m);
+                    const wireModel = m.model;
+
+                    return (
+                      <button
+                        key={m.provider}
+                        type="button"
+                        class={'model-cascade-item' + (isSelected ? ' selected' : '')}
+                        onClick={() => {
+                          onChange(m.provider);
+                          setOpen(false);
+                        }}
+                      >
+                        <div class="model-item-content">
+                          <div class="model-item-main-line">
+                            <span class="model-item-title">
+                              <HighlightText text={alias} query={searchQuery} />
+                            </span>
+                            {m.is_default && <span class="model-badge-default">默认</span>}
+                            {m.effort_applicable && (
+                              <span class="model-badge-thinking" title="思考模型">🧠</span>
+                            )}
+                          </div>
+                          {wireModel && wireModel !== alias && (
+                            <div class="model-item-sub-line">
+                              <HighlightText text={wireModel} query={searchQuery} />
+                            </div>
+                          )}
+                        </div>
+                        {isSelected && (
+                          <span class="model-item-selected-check" aria-hidden="true">
+                            ✓
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  {activeModels.length === 0 && (
+                    <div class="model-empty-hint">无可用模型</div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </div>

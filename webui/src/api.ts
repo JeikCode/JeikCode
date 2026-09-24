@@ -127,6 +127,8 @@ export interface ModelInfo {
   /** Available reasoning effort levels for this model. */
   reasoning_levels?: string[];
   context_window?: number;
+  /** Configured thinking budget in tokens, if any. */
+  thinking_budget?: number | null;
 }
 
 export async function getModels(): Promise<ModelInfo[]> {
@@ -1327,12 +1329,13 @@ export async function getApprovalMode(): Promise<ApprovalMode> {
   return body.mode;
 }
 
-/** Set the DeepSeek V4 `reasoning_effort` for a provider. `effort` is
- *  'high' | 'max' | null (clear → model default). Persists to the provider
- *  config so the next turn (live or /chat) picks it up. */
+/** Set the `reasoning_effort` and optional `thinking_budget` for a provider.
+ *  Persists to the provider config so the next turn picks it up. */
 export async function postLiveReasoningEffort(
   effort: string | null,
   provider?: string,
+  thinkingBudget?: number | null,
+  clearThinkingBudget?: boolean,
 ): Promise<void> {
   const resp = await apiFetch('/live/reasoning_effort', {
     method: 'POST',
@@ -1340,6 +1343,8 @@ export async function postLiveReasoningEffort(
     body: JSON.stringify({
       reasoning_effort: effort,
       ...(provider ? { provider } : {}),
+      ...(thinkingBudget !== undefined && thinkingBudget !== null ? { thinking_budget: thinkingBudget } : {}),
+      ...(clearThinkingBudget ? { clear_thinking_budget: true } : {}),
     }),
   });
   if (!resp.ok) throw new Error(`set live reasoning effort failed: ${resp.status}`);

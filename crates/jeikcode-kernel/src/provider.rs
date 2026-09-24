@@ -62,6 +62,7 @@ pub enum RateLimitRetryOwner {
 /// Anthropic thinking `budget_tokens`); an adapter MAY ignore it if unsupported.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReasoningEffort {
+    Off,
     Low,
     Medium,
     High,
@@ -73,6 +74,7 @@ pub enum ReasoningEffort {
 impl ReasoningEffort {
     pub fn as_str(&self) -> &str {
         match self {
+            ReasoningEffort::Off => "off",
             ReasoningEffort::Low => "low",
             ReasoningEffort::Medium => "medium",
             ReasoningEffort::High => "high",
@@ -85,10 +87,11 @@ impl ReasoningEffort {
     /// Parse a config string into an effort level.
     pub fn from_config(s: Option<&str>) -> Option<ReasoningEffort> {
         let val = s?.trim();
-        if val.is_empty() || val.eq_ignore_ascii_case("off") || val.eq_ignore_ascii_case("none") {
+        if val.is_empty() || val.eq_ignore_ascii_case("default") {
             return None;
         }
         match val.to_ascii_lowercase().as_str() {
+            "off" | "none" => Some(ReasoningEffort::Off),
             "low" => Some(ReasoningEffort::Low),
             "medium" => Some(ReasoningEffort::Medium),
             "high" => Some(ReasoningEffort::High),
@@ -181,9 +184,17 @@ mod tests {
             ReasoningEffort::from_config(Some("xhigh")),
             Some(ReasoningEffort::XHigh)
         );
-        // off / empty / unset → no opinion (None)
-        assert_eq!(ReasoningEffort::from_config(Some("off")), None);
-        assert_eq!(ReasoningEffort::from_config(Some("none")), None);
+        // off / none → explicit Off
+        assert_eq!(
+            ReasoningEffort::from_config(Some("off")),
+            Some(ReasoningEffort::Off)
+        );
+        assert_eq!(
+            ReasoningEffort::from_config(Some("none")),
+            Some(ReasoningEffort::Off)
+        );
+        // default / empty / unset → no opinion (None)
+        assert_eq!(ReasoningEffort::from_config(Some("default")), None);
         assert_eq!(ReasoningEffort::from_config(Some("")), None);
         assert_eq!(ReasoningEffort::from_config(None), None);
         assert_eq!(
