@@ -19,7 +19,7 @@
     <a href="#7-multi-project-knowledge-packs">Knowledge Packs</a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/version-7.0.5-blue.svg" alt="version">
+    <img src="https://img.shields.io/badge/version-7.1.1-blue.svg" alt="version">
     <img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="rust">
     <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="license">
     <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20HarmonyOS-lightgrey.svg" alt="platform">
@@ -32,7 +32,7 @@
       <img src="https://img.shields.io/badge/GitHub_Repository-JeikCode%2FJeikCode-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Repository" />
     </a>
     <a href="https://github.com/JeikCode/JeikCode/releases" target="_blank">
-      <img src="https://img.shields.io/badge/Releases-v7.0.5-00f2fe?style=for-the-badge&logo=github&logoColor=black" alt="Releases" />
+      <img src="https://img.shields.io/badge/Releases-v7.1.1-00f2fe?style=for-the-badge&logo=github&logoColor=black" alt="Releases" />
     </a>
   </p>
   <p>

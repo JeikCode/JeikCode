@@ -16,7 +16,7 @@ set -eu
 
 MANIFEST_BASE="${JEIKCODE_MANIFEST_URL:-https://raw.githubusercontent.com/JeikCode/JeikCode/main}"
 REPO_BASE="${JEIKCODE_DOWNLOAD_BASE:-https://github.com/JeikCode/JeikCode/releases/download}"
-DEFAULT_VERSION="v7.0.5"
+DEFAULT_VERSION="v7.1.1"
 
 # --- detect platform ---
 uname_s=$(uname -s)
