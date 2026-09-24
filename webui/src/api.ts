@@ -129,6 +129,8 @@ export interface ModelInfo {
   context_window?: number;
   /** Configured thinking budget in tokens, if any. */
   thinking_budget?: number | null;
+  /** Configured max output tokens, if any. */
+  max_tokens?: number | null;
 }
 
 export async function getModels(): Promise<ModelInfo[]> {
@@ -812,6 +814,7 @@ export interface CreateProviderBody {
   api_key?: string;
   base_url?: string;
   context_window?: number;
+  max_tokens?: number | null;
   supports_vision?: boolean;
   reasoning_model?: boolean;
   reasoning_effort?: string | null;
@@ -844,6 +847,8 @@ export interface UpdateProviderBody {
   api_key?: string;
   base_url?: string;
   context_window?: number;
+  max_tokens?: number | null;
+  clear_max_tokens?: boolean;
   supports_vision?: boolean | null;
   reasoning_model?: boolean | null;
   reasoning_effort?: string | null;

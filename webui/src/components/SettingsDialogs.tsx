@@ -22,7 +22,16 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { Select } from './Select';
 
 // 上下文窗口预设（数值与配置一致，显示时按 /1000 换算为「k tokens」）。
-const CONTEXT_WINDOW_PRESETS = [32000, 64000, 128000, 256000, 512000, 1000000];
+const CONTEXT_WINDOW_PRESETS = [32000, 64000, 128000, 256000, 512000, 1000000, 2000000];
+
+/** 最大输出预算预设选项（默认包含 65536 和 131072 即 65536 的二倍）。 */
+const MAX_OUTPUT_PRESETS = [8192, 16384, 32768, 65536, 131072];
+
+function fmtMaxTokens(v: number): string {
+  if (v === 65536) return '64K (65,536)';
+  if (v === 131072) return '128K (131,072)';
+  return v >= 1024 ? `${Math.round(v / 1024)}K (${v.toLocaleString()})` : String(v);
+}
 
 /** 与 TUI `/provider` 对齐的可自定义协议 + ollama。 */
 const PROVIDER_TYPE_OPTIONS = [
@@ -814,7 +823,12 @@ function ProviderFormDialog({
   const [name] = useState(editing?.name ?? '');
   const [nameInput, setNameInput] = useState(editing?.name ?? '');
   const [model, setModel] = useState(editing?.model ?? '');
-  const [contextWindow, setContextWindow] = useState<number>(editing?.context_window ?? 128000);
+  const [contextWindow, setContextWindow] = useState<number>(
+    editing?.context_window ?? 256000,
+  );
+  const [maxTokens, setMaxTokens] = useState<number | ''>(
+    editing?.max_tokens ?? 65536,
+  );
   const [supportsVision, setSupportsVision] = useState(Boolean(editing?.supports_vision));
   const [reasoningModel, setReasoningModel] = useState(Boolean(editing?.reasoning_model));
   const [reasoningEffort, setReasoningEffort] = useState(editing?.reasoning_effort ?? '');
@@ -942,6 +956,7 @@ function ProviderFormDialog({
         ? 0
         : (reasoningModel && budgetEnabled && thinkingBudget !== '' ? Number(thinkingBudget) : null),
     };
+    const maxTokensVal = maxTokens !== '' && Number(maxTokens) > 0 ? Number(maxTokens) : null;
     const accountType = normalizeProviderType(selectedAccount.type);
     try {
       if (isEdit) {
@@ -950,6 +965,8 @@ function ProviderFormDialog({
           model: model.trim(),
           account: selectedAccount.id,
           context_window: contextWindow,
+          max_tokens: maxTokensVal,
+          clear_max_tokens: maxTokensVal === null,
           ...advanced,
         });
         if (setDefault && !editing?.is_default) {
@@ -962,6 +979,7 @@ function ProviderFormDialog({
           model: model.trim(),
           account: selectedAccount.id,
           context_window: contextWindow,
+          max_tokens: maxTokensVal,
           set_default: setDefault || undefined,
           ...advanced,
         });
@@ -1073,9 +1091,13 @@ function ProviderFormDialog({
           )}
         </div>
 
-        <div class="add-model-row">
-          <div class="add-model-field add-model-field-type">
-            <label class="add-model-label">{t('settings.contextWindow')}</label>
+        {/* 输入与输出控制胶囊并排区 */}
+        <div class="add-model-io-grid">
+          <div class="add-model-field">
+            <label class="add-model-label">
+              <span class="field-io-badge input">📥 输入</span>
+              {t('settings.contextWindowInput')}
+            </label>
             <Select
               value={String(contextWindow)}
               options={cwOptions.map((v) => ({
@@ -1085,82 +1107,129 @@ function ProviderFormDialog({
               onChange={(v) => setContextWindow(Number(v))}
             />
           </div>
-          <div class="add-model-field add-model-field-default">
-            <label class="add-model-checkbox-label">
-              <input
-                type="checkbox"
-                checked={setDefault}
-                disabled={editing?.is_default}
-                onChange={(e) => setSetDefault((e.target as HTMLInputElement).checked)}
-              />
-              {t('settings.setAsDefault')}
+
+          <div class="add-model-field">
+            <label class="add-model-label">
+              <span class="field-io-badge output">📤 输出</span>
+              {t('settings.maxTokensOutput')}
             </label>
+            <div class="max-tokens-control-row">
+              <div style={{ flex: 1 }}>
+                <Select
+                  value={
+                    maxTokens === ''
+                      ? 'custom'
+                      : MAX_OUTPUT_PRESETS.includes(Number(maxTokens))
+                        ? String(maxTokens)
+                        : 'custom'
+                  }
+                  options={[
+                    ...MAX_OUTPUT_PRESETS.map((v) => ({
+                      value: String(v),
+                      label: fmtMaxTokens(v),
+                    })),
+                    { value: 'custom', label: '自定义 Tokens' },
+                  ]}
+                  onChange={(v) => {
+                    if (v === 'custom') {
+                      if (maxTokens === '' || MAX_OUTPUT_PRESETS.includes(Number(maxTokens))) {
+                        setMaxTokens(65536);
+                      }
+                    } else {
+                      setMaxTokens(Number(v));
+                    }
+                  }}
+                />
+              </div>
+              <input
+                type="number"
+                class="menu-input max-tokens-input"
+                min="1"
+                step="1024"
+                placeholder="Tokens"
+                value={maxTokens}
+                onInput={(e) => {
+                  const val = parseInt((e.target as HTMLInputElement).value, 10);
+                  setMaxTokens(isNaN(val) || val <= 0 ? '' : val);
+                }}
+              />
+            </div>
           </div>
         </div>
 
-        <div class="add-model-checkboxes">
-          <label class="add-model-checkbox-label">
-            <input
-              type="checkbox"
-              checked={supportsVision}
-              onChange={(e) => setSupportsVision((e.target as HTMLInputElement).checked)}
-            />
-            {t('settings.supportsVision')}
-          </label>
-          <label class="add-model-checkbox-label">
-            <input
-              type="checkbox"
-              checked={reasoningModel}
-              onChange={(e) => setReasoningModel((e.target as HTMLInputElement).checked)}
-            />
-            {t('settings.reasoningModel')}
-          </label>
+        {/* 现代高质感胶囊开关药丸 (Toggle Pills) */}
+        <div class="add-model-pills-row">
+          <button
+            type="button"
+            class={'capsule-toggle-pill' + (setDefault ? ' active' : '')}
+            disabled={editing?.is_default}
+            onClick={() => !editing?.is_default && setSetDefault((v) => !v)}
+          >
+            <span class="pill-dot" />
+            <span class="pill-icon">⭐</span>
+            <span class="pill-text">{t('settings.setAsDefault')}</span>
+          </button>
+
+          <button
+            type="button"
+            class={'capsule-toggle-pill' + (supportsVision ? ' active' : '')}
+            onClick={() => setSupportsVision((v) => !v)}
+          >
+            <span class="pill-dot" />
+            <span class="pill-icon">👁️</span>
+            <span class="pill-text">{t('settings.supportsVision')}</span>
+          </button>
+
+          <button
+            type="button"
+            class={'capsule-toggle-pill' + (reasoningModel ? ' active' : '')}
+            onClick={() => setReasoningModel((v) => !v)}
+          >
+            <span class="pill-dot" />
+            <span class="pill-icon">🧠</span>
+            <span class="pill-text">{t('settings.reasoningModel')}</span>
+          </button>
         </div>
 
+        {/* 思考模型专属胶囊卡片 */}
         {reasoningModel && (
-          <div class="add-model-reasoning-fields">
-            <div class="add-model-field">
-              <label class="add-model-label">{t('settings.reasoningEffort')}</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{ flex: 1 }}>
-                  <Select
-                    value={reasoningEffort}
-                    options={REASONING_EFFORT_OPTIONS}
-                    onChange={(v) => {
-                      setReasoningEffort(v);
-                      if (v === 'off') {
-                        setBudgetEnabled(false);
-                      } else if (v && !thinkingBudget) {
-                        const defaults: Record<string, number> = {
-                          low: 2048,
-                          medium: 5120,
-                          high: 16384,
-                          xhigh: 32768,
-                          max: 65536,
-                        };
-                        if (defaults[v]) setThinkingBudget(defaults[v]);
-                      }
-                    }}
-                  />
-                </div>
-                {reasoningEffort && reasoningEffort !== 'off' && (
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      fontSize: '11px',
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={budgetEnabled}
-                      onChange={(e) => {
-                        const checked = (e.target as HTMLInputElement).checked;
-                        setBudgetEnabled(checked);
-                        if (checked && !thinkingBudget) {
+          <div class="add-model-reasoning-capsule-card">
+            <div class="reasoning-card-header">
+              <span class="reasoning-card-title">🧠 思考模型扩展参数</span>
+            </div>
+            <div class="reasoning-card-content">
+              <div class="add-model-field">
+                <label class="add-model-label">{t('settings.reasoningEffort')}</label>
+                <div class="reasoning-effort-row">
+                  <div style={{ flex: 1 }}>
+                    <Select
+                      value={reasoningEffort}
+                      options={REASONING_EFFORT_OPTIONS}
+                      onChange={(v) => {
+                        setReasoningEffort(v);
+                        if (v === 'off') {
+                          setBudgetEnabled(false);
+                        } else if (v && !thinkingBudget) {
+                          const defaults: Record<string, number> = {
+                            low: 2048,
+                            medium: 5120,
+                            high: 16384,
+                            xhigh: 32768,
+                            max: 65536,
+                          };
+                          if (defaults[v]) setThinkingBudget(defaults[v]);
+                        }
+                      }}
+                    />
+                  </div>
+                  {reasoningEffort && reasoningEffort !== 'off' && (
+                    <button
+                      type="button"
+                      class={'effort-budget-capsule-btn' + (budgetEnabled ? ' active' : '')}
+                      onClick={() => {
+                        const next = !budgetEnabled;
+                        setBudgetEnabled(next);
+                        if (next && !thinkingBudget) {
                           const defaults: Record<string, number> = {
                             low: 2048,
                             medium: 5120,
@@ -1171,43 +1240,47 @@ function ProviderFormDialog({
                           setThinkingBudget(defaults[reasoningEffort] || 2048);
                         }
                       }}
+                    >
+                      <span class="budget-btn-check">{budgetEnabled ? '✓' : '+'}</span>
+                      <span>自定义预算</span>
+                    </button>
+                  )}
+                  {budgetEnabled && reasoningEffort !== 'off' && (
+                    <input
+                      type="number"
+                      class="menu-input reasoning-budget-input"
+                      min="0"
+                      step="1024"
+                      placeholder="Tokens"
+                      value={thinkingBudget}
+                      onInput={(e) => {
+                        const val = parseInt((e.target as HTMLInputElement).value, 10);
+                        setThinkingBudget(isNaN(val) ? '' : val);
+                      }}
                     />
-                    √ 预算
-                  </label>
-                )}
-                {budgetEnabled && reasoningEffort !== 'off' && (
-                  <input
-                    type="number"
-                    style={{
-                      width: '80px',
-                      height: '32px',
-                      padding: '2px 6px',
-                      fontSize: '12px',
-                      border: '1px solid var(--app-input-border)',
-                      borderRadius: 'var(--corner-radius-small)',
-                      background: 'var(--app-input-background)',
-                      color: 'var(--app-primary-foreground)',
-                      textAlign: 'right',
-                    }}
-                    min="0"
-                    step="1024"
-                    placeholder="Tokens"
-                    value={thinkingBudget}
-                    onInput={(e) => {
-                      const val = parseInt((e.target as HTMLInputElement).value, 10);
-                      setThinkingBudget(isNaN(val) ? '' : val);
-                    }}
-                  />
-                )}
+                  )}
+                </div>
               </div>
-            </div>
-            <div class="add-model-field">
-              <label class="add-model-label">{t('settings.reasoningHistory')}</label>
-              <Select
-                value={reasoningHistory}
-                options={REASONING_HISTORY_OPTIONS}
-                onChange={(v) => setReasoningHistory(v)}
-              />
+
+              <div class="add-model-field">
+                <label class="add-model-label">{t('settings.reasoningHistory')}</label>
+                <div class="reasoning-history-pills">
+                  <button
+                    type="button"
+                    class={'history-pill' + (reasoningHistory === 'include' ? ' active' : '')}
+                    onClick={() => setReasoningHistory('include')}
+                  >
+                    💭 include (回传思考)
+                  </button>
+                  <button
+                    type="button"
+                    class={'history-pill' + (reasoningHistory === 'exclude' ? ' active' : '')}
+                    onClick={() => setReasoningHistory('exclude')}
+                  >
+                    🚫 exclude (不回传)
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -1217,12 +1290,12 @@ function ProviderFormDialog({
             {(isEdit ? t('settings.updateFailed') : t('settings.addFailed'))}: {error}
           </div>
         )}
-        <div class="modal-footer" style={{ marginTop: '16px', padding: 0 }}>
-          <button class="btn" type="button" onClick={onClose} disabled={saving}>
+        <div class="modal-footer" style={{ marginTop: '20px', padding: 0 }}>
+          <button class="btn btn-capsule-secondary" type="button" onClick={onClose} disabled={saving}>
             {t('settings.close')}
           </button>
           <button
-            class="btn btn-primary"
+            class="btn btn-primary btn-capsule-primary"
             type="button"
             disabled={saving || accounts.length === 0}
             onClick={() => void handleSave()}

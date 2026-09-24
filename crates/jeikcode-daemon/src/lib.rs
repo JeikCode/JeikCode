@@ -4195,6 +4195,9 @@ pub struct ModelInfo {
     /// Model's configured thinking budget in tokens, if set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_budget: Option<u32>,
+    /// Model's configured max output tokens cap, if set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<usize>,
 }
 
 /// Build the `/models` list from the UNIFIED model catalog (`logical_models`)
@@ -4226,6 +4229,7 @@ fn models_from_config(config: &Config) -> Vec<ModelInfo> {
                 reasoning_levels: p.effective_reasoning_levels(),
                 context_window: Some(p.context_window).filter(|w| *w > 0),
                 thinking_budget: p.thinking_budget,
+                max_tokens: p.max_tokens,
             })
         })
         .collect()

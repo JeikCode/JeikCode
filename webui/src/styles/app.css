@@ -4411,6 +4411,248 @@ body {
   justify-content: flex-end;
   padding-top: 2px;
 }
+
+/* 输入与输出栅格 */
+.add-model-io-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 600px) {
+  .add-model-io-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.field-io-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  margin-right: 6px;
+  line-height: 1.4;
+}
+
+.field-io-badge.input {
+  background: color-mix(in srgb, #3b82f6 20%, transparent);
+  color: #60a5fa;
+  border: 1px solid color-mix(in srgb, #3b82f6 40%, transparent);
+}
+
+.field-io-badge.output {
+  background: color-mix(in srgb, #f59e0b 20%, transparent);
+  color: #fbbf24;
+  border: 1px solid color-mix(in srgb, #f59e0b 40%, transparent);
+}
+
+.max-tokens-control-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.max-tokens-input {
+  width: 96px !important;
+  height: 38px !important;
+  padding: 0 10px !important;
+  font-size: 13px !important;
+  text-align: right !important;
+  border-radius: var(--corner-radius-small, 8px) !important;
+}
+
+/* 现代高质感胶囊开关药丸 (Toggle Pills) */
+.add-model-pills-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+}
+
+.capsule-toggle-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-radius: 9999px;
+  background: var(--app-card-background, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--app-input-border, rgba(255, 255, 255, 0.12));
+  color: var(--app-secondary-foreground);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+.capsule-toggle-pill:hover:not(:disabled) {
+  background: var(--app-ghost-button-hover-background, rgba(255, 255, 255, 0.08));
+  color: var(--app-primary-foreground);
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: translateY(-1px);
+}
+
+.capsule-toggle-pill.active {
+  background: color-mix(in srgb, var(--app-primary, #6366f1) 22%, transparent);
+  border-color: var(--app-primary, #6366f1);
+  color: var(--app-primary-foreground);
+  font-weight: 600;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--app-primary, #6366f1) 35%, transparent);
+}
+
+.capsule-toggle-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.capsule-toggle-pill .pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  transition: all 0.2s ease;
+}
+
+.capsule-toggle-pill.active .pill-dot {
+  background: #22c55e;
+  box-shadow: 0 0 8px #22c55e;
+}
+
+.capsule-toggle-pill .pill-icon {
+  font-size: 13px;
+}
+
+/* 思考模型专属胶囊卡片 */
+.add-model-reasoning-capsule-card {
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid color-mix(in srgb, var(--app-primary, #6366f1) 32%, transparent);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: slideDownFade 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideDownFade {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.reasoning-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 8px;
+}
+
+.reasoning-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-primary-foreground);
+  letter-spacing: 0.3px;
+}
+
+.reasoning-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.reasoning-effort-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.effort-budget-capsule-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--app-input-border, rgba(255, 255, 255, 0.16));
+  background: transparent;
+  color: var(--app-secondary-foreground);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.effort-budget-capsule-btn:hover {
+  border-color: var(--app-primary, #6366f1);
+  color: var(--app-primary-foreground);
+}
+
+.effort-budget-capsule-btn.active {
+  background: color-mix(in srgb, var(--app-primary, #6366f1) 22%, transparent);
+  border-color: var(--app-primary, #6366f1);
+  color: var(--app-primary-foreground);
+  font-weight: 600;
+}
+
+.budget-btn-check {
+  font-weight: bold;
+}
+
+.reasoning-budget-input {
+  width: 90px !important;
+  height: 38px !important;
+  padding: 0 10px !important;
+  font-size: 13px !important;
+  text-align: right !important;
+  border-radius: 8px !important;
+}
+
+.reasoning-history-pills {
+  display: flex;
+  gap: 10px;
+}
+
+.history-pill {
+  flex: 1;
+  padding: 7px 14px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--app-input-border, rgba(255, 255, 255, 0.12));
+  background: var(--app-card-background, rgba(255, 255, 255, 0.03));
+  color: var(--app-secondary-foreground);
+  text-align: center;
+  transition: all 0.15s ease;
+}
+
+.history-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--app-primary-foreground);
+}
+
+.history-pill.active {
+  background: color-mix(in srgb, var(--app-primary, #6366f1) 22%, transparent);
+  border-color: var(--app-primary, #6366f1);
+  color: var(--app-primary-foreground);
+  font-weight: 600;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--app-primary, #6366f1) 25%, transparent);
+}
+
+.btn-capsule-primary {
+  border-radius: 9999px !important;
+  padding: 8px 24px !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--app-primary, #6366f1) 40%, transparent) !important;
+}
+
+.btn-capsule-secondary {
+  border-radius: 9999px !important;
+  padding: 8px 20px !important;
+}
 .add-model-toggles {
   display: flex;
   flex-wrap: wrap;
