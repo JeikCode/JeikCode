@@ -3,8 +3,8 @@
   "released_at": "2026-09-24",
   "binaries": {
     "darwin-arm64": {
-      "sha256": "f8019b429cd713ec6c206fbb925717f3f9eb0c4f2f0b2e73b1dc4d15acae9b30",
-      "size": 54530544
+      "sha256": "c55b765a8c9c61c56e6ec201ace84f326f65e534aaa49b5ac3ca2135a20bfe8b",
+      "size": 54547280
     },
     "darwin-x64": {
       "sha256": "7393c1d5a1d08930e6b85206020a15e135b4f0d8af47fd8f6f2f94887d17a958",
