@@ -5310,6 +5310,7 @@ export function Chat({ sessionId, onSessionId, cwd, onPermission, onPermissionRe
             value={provider}
             onChange={(p) => switchProvider(p)}
             onDefaultChange={followDefaultProvider}
+            sessionId={activeId}
           />
           <div class="input-turn-controls">
             {busy || recoveryPolicy.allowStop ? (

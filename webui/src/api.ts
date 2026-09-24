@@ -1336,6 +1336,7 @@ export async function postLiveReasoningEffort(
   provider?: string,
   thinkingBudget?: number | null,
   clearThinkingBudget?: boolean,
+  sessionId?: string | null,
 ): Promise<void> {
   const resp = await apiFetch('/live/reasoning_effort', {
     method: 'POST',
@@ -1343,6 +1344,7 @@ export async function postLiveReasoningEffort(
     body: JSON.stringify({
       reasoning_effort: effort,
       ...(provider ? { provider } : {}),
+      ...(sessionId ? { session_id: sessionId } : {}),
       ...(thinkingBudget !== undefined && thinkingBudget !== null ? { thinking_budget: thinkingBudget } : {}),
       ...(clearThinkingBudget ? { clear_thinking_budget: true } : {}),
     }),

@@ -491,7 +491,7 @@ fn build_request_body(
     let mut body = Map::new();
     body.insert("model".into(), json!(model));
     // `max_tokens` is REQUIRED. Per-call override wins; else the cfg default.
-    let max_tokens = options.max_tokens.unwrap_or(cfg.max_tokens);
+    let mut max_tokens = options.max_tokens.unwrap_or(cfg.max_tokens);
     body.insert("max_tokens".into(), json!(max_tokens));
     body.insert("stream".into(), json!(true));
 
@@ -589,16 +589,25 @@ fn build_request_body(
                     10000
                 };
 
-                // Anthropic requires budget_tokens < max_tokens. Short auxiliary
-                // calls (session title) pass a small max_tokens; without clamping
-                // the default 10k budget 400s the whole request.
-                if max_tokens > 1 {
-                    let upper = max_tokens.saturating_sub(1);
-                    if budget >= max_tokens {
-                        budget = (max_tokens * 3 / 4).clamp(1, upper);
-                    } else {
-                        budget = budget.clamp(1, upper);
+                // Anthropic requires budget_tokens < max_tokens.
+                // When user explicitly sets a high thinking budget or effort (e.g. 16384, 32768, 65536),
+                // automatically expand max_tokens so the user's budget is fully preserved
+                // without being artificially discounted or truncated to 12288!
+                let has_explicit_budget_request =
+                    cfg.thinking_budget.is_some() || options.reasoning_effort.is_some();
+                if budget > 0 {
+                    if has_explicit_budget_request && options.max_tokens.is_none() && max_tokens <= budget {
+                        let expanded = (budget + 8192).min(cfg.context_window.saturating_sub(1024).max(budget + 1));
+                        max_tokens = max_tokens.max(expanded);
                     }
+                    if max_tokens > 1 && budget >= max_tokens {
+                        if has_explicit_budget_request {
+                            budget = max_tokens.saturating_sub(1);
+                        } else {
+                            budget = (max_tokens * 3 / 4).clamp(1, max_tokens.saturating_sub(1));
+                        }
+                    }
+                    body.insert("max_tokens".into(), json!(max_tokens));
                 }
                 body.insert(
                     "thinking".into(),
@@ -1811,6 +1820,24 @@ mod tests {
         assert_eq!(body["thinking"]["type"], "enabled");
         // default budget clamped to max_tokens - 1 (or 75%): 8192 * 3 / 4 = 6144
         assert_eq!(body["thinking"]["budget_tokens"], 6144);
+    }
+
+    #[test]
+    fn high_budget_preserves_full_amount_and_expands_max_tokens() {
+        let mut c = cfg();
+        c.thinking = true;
+        c.max_tokens = 16384;
+        c.thinking_budget = Some(16384);
+        let body = build_request_body(
+            "claude-opus-4-8",
+            &[Message::user("hi")],
+            &[],
+            &ChatOptions::default(),
+            &c,
+        );
+        // Budget must NOT be discounted to 12288 (3/4 of 16384)!
+        assert_eq!(body["thinking"]["budget_tokens"], 16384);
+        assert!(body["max_tokens"].as_u64().unwrap() > 16384);
     }
 
     #[test]

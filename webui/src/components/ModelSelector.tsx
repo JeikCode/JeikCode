@@ -68,10 +68,12 @@ export function ModelSelector({
   value,
   onChange,
   onDefaultChange,
+  sessionId,
 }: {
   value: string | null;
   onChange: (p: string) => void;
   onDefaultChange?: (p: string) => void;
+  sessionId?: string | null;
 }) {
   const t = useT();
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -307,6 +309,7 @@ export function ModelSelector({
         current.provider,
         budgetVal ?? null,
         clearBudget,
+        sessionId,
       ).catch((err) => {
         setEffortOverride(prevEffort);
         setBudgetOverride(prevBudget);

@@ -213,7 +213,7 @@ impl CodingProviderFactory for DefaultCodingProviderFactory {
 }
 
 pub fn default_max_tokens(context_window: u32) -> u32 {
-    (context_window / 4).clamp(8_000, 16_384)
+    (context_window / 4).clamp(8_000, 64_000)
 }
 
 pub fn derive_tier_config(
@@ -396,6 +396,6 @@ mod tests {
     fn default_output_cap_matches_legacy_bounds() {
         assert_eq!(default_max_tokens(16_000), 8_000);
         assert_eq!(default_max_tokens(64_000), 16_000);
-        assert_eq!(default_max_tokens(200_000), 16_384);
+        assert_eq!(default_max_tokens(200_000), 50_000);
     }
 }

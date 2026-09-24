@@ -2173,15 +2173,10 @@ pub(crate) async fn live_message(
             // stop the turn first.
             if let Some(requested) = requested_provider.as_deref() {
                 if let Some(handle) = registry.handle(&session_id) {
-                    let reload_config = match Config::load(&Config::default_path()) {
-                        Ok(c) => c,
-                        Err(error) => {
-                            return Json(serde_json::json!({
-                                "accepted": false,
-                                "error": format!("load provider config failed: {error}"),
-                            }));
-                        }
-                    };
+                    let reload_config = jeikcode_config::ConfigStore::default_store()
+                        .read()
+                        .map(|s| s.config)
+                        .unwrap_or_else(|_| Config::load(&Config::default_path()).unwrap_or_default());
                     if !reload_config.selection_exists(requested) {
                         return Json(serde_json::json!({
                             "accepted": false,
@@ -2768,6 +2763,9 @@ pub(crate) struct LiveReasoningEffortReq {
     /// 目标 provider；None 时取当前默认 provider。
     #[serde(default)]
     pub provider: Option<String>,
+    /// 目标 session id；提供时同步重载该活跃 session 的 provider。
+    #[serde(default)]
+    pub session_id: Option<String>,
     /// 思考等级："off" | "low" | "medium" | "high" | "xhigh" | "max" | null（恢复默认）。
     #[serde(default)]
     pub reasoning_effort: Option<String>,
@@ -2879,6 +2877,26 @@ pub(crate) async fn live_reasoning_effort(
         }
     };
     let config = commit.snapshot.config.clone();
+
+    // 多会话 Registry 模式：若提供了 session_id，立即对该活跃会话执行热重载
+    let registry = jeikcode_coding::session_runtime_registry::SessionRuntimeRegistry::global();
+    if let Some(ref sid) = req.session_id {
+        if let Some(handle) = registry.handle(sid) {
+            let working_dir = { state.project.read().await.working_dir.clone() };
+            let wd = live_current_working_dir(&working_dir);
+            let runtime_config = live_runtime_config(
+                &config,
+                &target,
+                &wd,
+                state.telemetry.clone(),
+            );
+            let next = crate::kernel_runtime::coding_config_from_runtime(&runtime_config);
+            let _ = handle.reassemble_provider(next).await;
+            if let Ok(fp) = crate::native_live::provider_fingerprint(&config, &target) {
+                registry.set_provider_fingerprint(sid, Some(fp));
+            }
+        }
+    }
 
     if let Ok(binding) = crate::native_live::binding() {
         let runtime_config = chat_runtime_config(
