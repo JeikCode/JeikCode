@@ -199,6 +199,7 @@ mcp = [
     "dep:anyhow", "dep:sha2", "dep:uuid", "dep:dirs", "dep:toml", "dep:tempfile",
     "dep:reqwest", "reqwest/blocking", "dep:url", "dep:jeikcode-config",
     "tokio/process", "tokio/io-util",
+    "codeintel",
 ]
 # Session persistence + cross-session recall: two-tier on-disk store
 # ($JEIKCODE_HOME/sessions/<project_hash>/ — same scheme as production so old/new

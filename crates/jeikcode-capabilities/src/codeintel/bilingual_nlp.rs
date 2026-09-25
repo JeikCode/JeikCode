@@ -147,6 +147,13 @@ impl DynamicThesaurus {
 前端, 组件, 页面 = frontend, component, view, page, ui
 后端, 控制器, 接口 = backend, server, controller, handler, endpoint, api
 路由, 拦截器 = route, router, interceptor, guard
+截图, 截屏, 屏幕截图 = screenshot, capture_screen, snapshot, screen_capture, take_screenshot
+邮件, 邮箱, 发邮件 = mail, email, send_mail, send_email, message
+数据库, 查表, 执行SQL = db, database, sql, query, exec_sql, select
+浏览器, 打开网页, 点击, 填表 = browser, click, fill, navigate, snapshot, webview
+表格, 工作表, 表格数据, 公式 = sheet, excel, worksheet, formula, table, spreadsheet
+微信支付, 支付重试 = weixinpay, retry_pay, pay, checkout
+
 数据库, 数据表, 实体 = database, db, table, entity, model, schema
 持久层, 数据访问 = dao, repository, mapper, orm
 事务, 提交, 回滚 = transaction, tx, commit, rollback

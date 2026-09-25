@@ -28,6 +28,7 @@ pub mod registry;
 pub mod schema_cache;
 pub mod session_pool;
 pub mod tool;
+pub mod tool_index;
 pub mod transport_http;
 pub mod transport_stdio;
 pub mod trust;
@@ -52,6 +53,7 @@ pub use schema_cache::{
 };
 pub use session_pool::{SessionMcpLease, SessionMcpPool};
 pub use tool::{mcp_tool_full_name, sanitize_name_segment, McpToolAdapter};
+pub use tool_index::{McpToolIndex, McpToolIndexItem};
 pub use types::*;
 
 /// Reap every project-scoped and session-scoped MCP transport. Drivers must

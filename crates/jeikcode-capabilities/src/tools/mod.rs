@@ -66,6 +66,7 @@ pub mod sensitive_path;
 pub(crate) mod shell_route;
 pub mod task;
 pub mod todo;
+pub mod tool_search;
 /// Network tools (`web_fetch` / `web_search`). Opt-in `web` feature (HTTP stack).
 #[cfg(feature = "web")]
 pub mod web_fetch;
@@ -113,6 +114,7 @@ pub use todo::{
     bind_todowrite, is_todo_tool_name, todo_action_kind, TodoLive, TodoTool, TODO_TOOL_ALIASES,
     TODO_TOOL_NAME,
 };
+pub use tool_search::{ToolMountActivator, ToolSearchTool};
 #[cfg(feature = "web")]
 pub use web_fetch::WebFetchTool;
 #[cfg(feature = "web")]
@@ -150,6 +152,7 @@ pub fn coding_tool_names() -> &'static [&'static str] {
             "glob",
             "global_search_replace",
             "todo_write",
+            "tool_search",
             "jeikcode_config_guide",
             "jeikcode_config_reload",
             "fetch_output",
@@ -172,6 +175,7 @@ pub fn coding_tool_names() -> &'static [&'static str] {
             "glob",
             "global_search_replace",
             "todo_write",
+            "tool_search",
             "jeikcode_config_guide",
             "jeikcode_config_reload",
             "fetch_output",
@@ -204,6 +208,10 @@ pub fn register_coding_tools_with_vision(reg: &mut ToolRegistry, vision: bool) {
     reg.register(Arc::new(GrepTool));
     reg.register(Arc::new(GlobTool));
     reg.register(Arc::new(GlobalSearchReplaceTool));
+    reg.register(Arc::new(ToolSearchTool::new(
+        std::sync::Arc::new(crate::mcp::McpToolIndex::new()),
+        None,
+    )));
     reg.register(Arc::new(JeikcodeConfigGuideTool::new()));
     reg.register(Arc::new(JeikcodeConfigReloadTool::new()));
     // Gate on JEIKCODE_TODO env var (0/false/off → skip; anything else or absent → register).
@@ -896,6 +904,7 @@ mod tests {
         "glob",
         "global_search_replace",
         "todo_write",
+        "tool_search",
         "jeikcode_config_guide",
         "jeikcode_config_reload",
     ];

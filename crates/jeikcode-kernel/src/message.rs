@@ -165,6 +165,11 @@ pub struct Message {
     /// precedes the real prompt is never mistaken for the sacred task anchor.
     #[serde(default)]
     pub synthetic: bool,
+    /// Explicitly protected from compaction eviction. When inside a drained range,
+    /// protected messages are preserved and automatically coalesced into the protected
+    /// prefix or anchor, ensuring critical tool discoveries and guidance are never lost.
+    #[serde(default)]
+    pub protected: bool,
     /// Internal provenance for assistant messages produced by kernel-driven control rounds.
     /// Empty for normal user/model messages. Example: "verify_cadence".
     /// [`TURN_DIAGNOSTIC_ORIGIN`] is display-only: persisted for WebUI/TUI replay,
@@ -246,6 +251,7 @@ impl Message {
             is_error: false,
             meta: None,
             synthetic: false,
+            protected: false,
             internal_origin: None,
             reasoning: None,
             images: vec![],
@@ -262,6 +268,7 @@ impl Message {
             is_error: false,
             meta: None,
             synthetic: false,
+            protected: false,
             internal_origin: None,
             reasoning: None,
             images: vec![],
@@ -278,6 +285,7 @@ impl Message {
             is_error: false,
             meta: None,
             synthetic: false,
+            protected: false,
             internal_origin: None,
             reasoning: None,
             images: vec![],
@@ -300,6 +308,7 @@ impl Message {
             is_error,
             meta: None,
             synthetic: false,
+            protected: false,
             internal_origin: None,
             reasoning: None,
             images: vec![],
@@ -323,6 +332,7 @@ impl Message {
             is_error: false,
             meta: None,
             synthetic: true,
+            protected: false,
             internal_origin: None,
             reasoning: None,
             images: vec![],
@@ -341,6 +351,7 @@ impl Message {
             is_error: false,
             meta: None,
             synthetic: false,
+            protected: false,
             internal_origin: None,
             reasoning: None,
             images,
@@ -362,6 +373,7 @@ impl Message {
             is_error: false,
             meta: None,
             synthetic: true,
+            protected: false,
             internal_origin: None,
             reasoning: None,
             images,
@@ -938,8 +950,20 @@ impl Conversation {
         };
 
         // 2. Build the candidate (compute-then-commit — never mutate self yet).
-        let mut candidate: Vec<Message> = Vec::with_capacity(len_before + 2);
+        // Extract any messages in the drained range marked as `protected` so they coalesce
+        // at the head of the candidate, surviving compaction intact.
+        let mut rescued_protected = Vec::new();
+        if drain_from < drain_to {
+            for m in &self.messages[drain_from..drain_to] {
+                if m.protected {
+                    rescued_protected.push(m.clone());
+                }
+            }
+        }
+
+        let mut candidate: Vec<Message> = Vec::with_capacity(len_before + 2 + rescued_protected.len());
         candidate.extend_from_slice(&self.messages[..drain_from]);
+        candidate.extend(rescued_protected);
         if let Some(summary) = &plan.summary {
             candidate.push(Message::synthetic_user(summary.clone()));
         }

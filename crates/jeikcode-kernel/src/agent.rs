@@ -3867,11 +3867,15 @@ impl RunningAgent {
                 echo_status.push(if result.is_error { '1' } else { '0' });
                 echo_status.push('\u{5}');
                 echo_status.push_str(&result.content);
-                convo.push(Message::tool_result(
+                // Mark tool result protected if it contains activation markers
+                let is_search_activation = result.content.contains("<!-- jeikcode:protected -->");
+                let mut msg = Message::tool_result(
                     &result.call_id,
                     &result.content,
                     result.is_error,
-                ));
+                );
+                msg.protected = is_search_activation;
+                convo.push(msg);
                 if matches!(
                     plan,
                     CallPlan::Result {

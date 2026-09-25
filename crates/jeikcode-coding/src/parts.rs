@@ -710,17 +710,13 @@ async fn prepare_with_plugin_hooks_reusing_lease(
     hooks.push(Arc::new(crate::code_tools::CodeToolsHook::new(
         code_explore_mounted,
     )));
-    let mcp_registries: Vec<_> = mcp_registry
+    // 2c. Block 4 MCP instructions Hook: completely retired in favor of
+    // natural tool search observation feedback and protected message retention.
+    let _mcp_registries: Vec<_> = mcp_registry
         .iter()
         .chain(session_mcp_registry.iter())
         .cloned()
         .collect();
-    if !mcp_registries.is_empty() {
-        hooks.push(Arc::new(McpInstructionsHook::new(
-            mcp_registries,
-            Arc::clone(&mcp_tool_names),
-        )));
-    }
     if let Some(b) = &session {
         let wd = cfg.working_dir.to_string_lossy().into_owned();
         let snapshot_hook = Arc::new(
@@ -1081,6 +1077,7 @@ impl CodingParts {
             let publish_lock = Arc::clone(&self.mcp_publish_lock);
             let publication_enabled = Arc::clone(&self.mcp_publication_enabled);
             let catalog_ready = self.mcp_catalog_ready.clone();
+            let deferred_enabled = std::env::var("JEIKCODE_MCP_DEFERRED").map(|v| v != "0" && v != "false").unwrap_or(true);
             tokio::spawn(async move {
                 // Project and session registries become one model-visible catalog.
                 // Wait for both scopes to reach an initial terminal state so a
@@ -1107,6 +1104,7 @@ impl CodingParts {
                         catalog_publisher,
                         publish_lock,
                         publication_enabled,
+                        deferred_enabled,
                     )
                     .await;
                     catalog_ready.send_replace(true);
@@ -1215,6 +1213,7 @@ async fn publish_ready_mcp_tools(
     catalog_publisher: MountedToolsPublisher,
     publish_lock: Arc<tokio::sync::Mutex<()>>,
     publication_enabled: Arc<std::sync::atomic::AtomicBool>,
+    deferred_enabled: bool,
 ) {
     if !publication_enabled.load(std::sync::atomic::Ordering::Acquire) {
         return;
@@ -1223,11 +1222,16 @@ async fn publish_ready_mcp_tools(
     // fail-closed withdrawal is never delayed by an MCP server timeout.
     let mut adapters: Vec<Arc<dyn jeikcode_kernel::tool::Tool>> = Vec::new();
     let mut aliases = std::collections::HashSet::new();
-    for mcp_registry in mcp_registries {
+    let mut all_tool_infos = Vec::new();
+
+    for mcp_registry in &mcp_registries {
         let tool_infos = tokio::select! {
             tools = mcp_registry.list_all_tools_cached() => tools,
             _ = mcp_registry.wait_for_cancellation() => return,
         };
+        for info in &tool_infos {
+            all_tool_infos.push(info.clone());
+        }
         for info in tool_infos {
             match jeikcode_capabilities::mcp::McpToolAdapter::new(mcp_registry.clone(), info) {
                 Ok(adapter) if aliases.insert(adapter.full_name().to_string()) => {
@@ -1254,10 +1258,61 @@ async fn publish_ready_mcp_tools(
         Ok(mut names) => *names = discovered.clone(),
         Err(poisoned) => *poisoned.into_inner() = discovered.clone(),
     }
-    let mut selected = base_names;
-    selected.extend(discovered);
-    let refs: Vec<&str> = selected.iter().map(String::as_str).collect();
-    catalog_publisher.publish(&tool_registry, &refs);
+
+    if deferred_enabled {
+        // Deferred mode: Build bilingual index and mount ToolSearchTool instead of all tools directly!
+        let mcp_index = Arc::new(jeikcode_capabilities::mcp::McpToolIndex::new());
+        mcp_index.update_tools(&all_tool_infos);
+
+        struct DynamicCatalogActivator {
+            tool_registry: ToolRegistry,
+            base_names: Vec<String>,
+            mcp_tool_names: Arc<std::sync::RwLock<Vec<String>>>,
+            catalog_publisher: MountedToolsPublisher,
+        }
+
+        #[async_trait::async_trait]
+        impl jeikcode_capabilities::tools::ToolMountActivator for DynamicCatalogActivator {
+            async fn activate_tools(&self, tool_names: &[String]) {
+                if let Ok(mut current) = self.mcp_tool_names.write() {
+                    for name in tool_names {
+                        if !current.contains(name) {
+                            current.push(name.clone());
+                        }
+                    }
+                    let mut selected = self.base_names.clone();
+                    selected.extend(current.iter().cloned());
+                    let refs: Vec<&str> = selected.iter().map(String::as_str).collect();
+                    self.catalog_publisher.publish(&self.tool_registry, &refs);
+                }
+            }
+        }
+
+        let activator = Arc::new(DynamicCatalogActivator {
+            tool_registry: tool_registry.clone(),
+            base_names: base_names.clone(),
+            mcp_tool_names: Arc::clone(&mcp_tool_names),
+            catalog_publisher: catalog_publisher.clone(),
+        });
+
+        tool_registry.register(Arc::new(jeikcode_capabilities::tools::ToolSearchTool::new(
+            mcp_index,
+            Some(activator),
+        )));
+
+        let mut selected = base_names;
+        if !selected.contains(&"tool_search".to_string()) {
+            selected.push("tool_search".to_string());
+        }
+        let refs: Vec<&str> = selected.iter().map(String::as_str).collect();
+        catalog_publisher.publish(&tool_registry, &refs);
+    } else {
+        // Full mode fallback: Mount all discovered MCP tools into the prompt
+        let mut selected = base_names;
+        selected.extend(discovered);
+        let refs: Vec<&str> = selected.iter().map(String::as_str).collect();
+        catalog_publisher.publish(&tool_registry, &refs);
+    }
 }
 
 /// Phase 2 — composition: parts + provider → a runnable [`Agent`].
