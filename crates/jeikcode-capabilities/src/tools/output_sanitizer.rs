@@ -144,7 +144,19 @@ fn is_transient_connection_noise(line: &str) -> bool {
 /// Language agnostic: covers GCC, Clang, Rust, Go, Python, TS, C#, Java, Swift, etc.
 fn is_source_location_error(line: &str) -> bool {
     let trimmed = line.trim();
-    if trimmed.contains(": error") || trimmed.contains(": fatal error") {
+    if trimmed.starts_with("-->")
+        || trimmed.contains("warning")
+        || trimmed.contains("Warning")
+        || trimmed.contains("[WARNING]")
+        || trimmed.starts_with("w:")
+    {
+        return false;
+    }
+    if trimmed.contains(": error")
+        || trimmed.contains(": fatal error")
+        || trimmed.contains("error:")
+        || trimmed.starts_with("File \"")
+    {
         return true;
     }
     if let Some(first_colon) = trimmed.find(':') {
@@ -154,13 +166,26 @@ fn is_source_location_error(line: &str) -> bool {
                 let line_str = &after[..second_colon];
                 if let Ok(num) = line_str.parse::<u32>() {
                     if num > 0 {
-                        return true;
+                        let remainder = &after[second_colon + 1..];
+                        if !remainder.contains("warning") && !remainder.contains("note") {
+                            return true;
+                        }
                     }
                 }
             }
         }
     }
     false
+}
+
+fn normalize_dump_lines(s: &str) -> String {
+    if s.contains("\\n") && !s.contains('\n') {
+        s.replace("\\n", "\n")
+    } else if s.len() > 500 && s.lines().count() <= 3 && s.contains(", ") {
+        s.replace(", ", ",\n")
+    } else {
+        s.to_string()
+    }
 }
 fn render_unified_diff(
     header: &str,
@@ -170,7 +195,9 @@ fn render_unified_diff(
     suffix: &str,
     id_hint: &str,
 ) -> String {
-    let diff = TextDiff::from_lines(left_raw, right_raw);
+    let left_norm = normalize_dump_lines(left_raw);
+    let right_norm = normalize_dump_lines(right_raw);
+    let diff = TextDiff::from_lines(&left_norm, &right_norm);
     let mut diff_output = String::with_capacity(4096);
 
     diff_output.push_str(&format!(
@@ -474,13 +501,6 @@ pub fn sanitize_build_output(
                 break;
             }
             char_offset += line.len() + 1;
-        }
-
-        // Also check `[stderr]\n` block boundary (stderr is natural home of errors)
-        if let Some(stderr_pos) = content.find("\n[stderr]\n") {
-            let actual_stderr = stderr_pos + 10;
-            first_error_pos =
-                Some(first_error_pos.map_or(actual_stderr, |p: usize| p.min(actual_stderr)));
         }
 
         if let Some(err_pos) = first_error_pos {
