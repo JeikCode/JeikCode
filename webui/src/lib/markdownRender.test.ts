@@ -132,3 +132,52 @@ test('code blocks with numbered lines and dashed dividers are not truncated when
   // 代码块外部的斜体必须作为普通段落渲染，绝不能被反相吞入代码块
   assert.match(out, /<em>老数据首次查询无损捞出并自动自愈打上标签。<\/em>/);
 });
+
+test('markdown code block containing headings is preserved without splitting', () => {
+  const md = [
+    '```markdown',
+    '# 🚀 Antigravity Tools v4.8.1 Release Notes',
+    '',
+    '> [🇨🇳 中文更新日志](#-中文更新日志-chinese)',
+    '',
+    '## 🇨🇳 中文更新日志 (Chinese)',
+    '### 🌟 核心亮点与重大更新',
+    '```',
+    '正文内容应该作为普通文本渲染，绝不被吞入代码块。',
+  ].join('\n');
+  const out = markdownToHtml(md);
+  // 必须只生成 1 个代码块，代码块内完整包含标题语法
+  assert.equal((out.match(/code-block-wrapper/g) ?? []).length, 1);
+  assert.match(out, /# 🚀 Antigravity Tools v4\.8\.1 Release Notes/);
+  assert.match(out, /## 🇨🇳 中文更新日志 \(Chinese\)/);
+  assert.match(out, /<p>正文内容应该作为普通文本渲染/);
+});
+
+test('python code block with hash comments is preserved without premature truncation', () => {
+  const py = [
+    '```python',
+    '# 这是一个重要配置注释',
+    'def configure():',
+    '    # TODO: 支持更多协议',
+    '    return True',
+    '```',
+    '代码块结束后的普通段落。',
+  ].join('\n');
+  const out = markdownToHtml(py);
+  assert.equal((out.match(/code-block-wrapper/g) ?? []).length, 1);
+  assert.match(out, /# 这是一个重要配置注释/);
+  assert.match(out, /<p>代码块结束后的普通段落。<\/p>/);
+});
+
+test('headings generate slug ids and support GFM anchor link targets', () => {
+  const md = [
+    '> [🇨🇳 中文更新日志](#-中文更新日志-chinese) | [🇺🇸 English Release Notes](#-english-release-notes)',
+    '',
+    '## 🇨🇳 中文更新日志 (Chinese)',
+    '## 🇺🇸 English Release Notes',
+  ].join('\n');
+  const out = markdownToHtml(md);
+  assert.match(out, /id="-中文更新日志-chinese"/);
+  assert.match(out, /data-alt-id="中文更新日志-chinese"/);
+  assert.match(out, /id="-english-release-notes"/);
+});

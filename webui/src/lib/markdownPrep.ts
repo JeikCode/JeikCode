@@ -11,6 +11,8 @@
 export interface FenceState {
   marker: '`' | '~';
   length: number;
+  lang?: string;
+  matchingCloseIdx?: number;
 }
 
 function stripLineBreak(line: string): string {
@@ -38,7 +40,8 @@ export function fenceOpen(line: string): FenceState | null {
 
   const info = raw.slice(markerEnd).trim();
   if (marker === '`' && info.includes('`')) return null;
-  return { marker, length };
+  const lang = info.split(/\s+/)[0]?.toLowerCase() ?? '';
+  return { marker, length, lang };
 }
 
 export function fenceClose(line: string, state: FenceState): boolean {
@@ -65,6 +68,58 @@ export function fenceClose(line: string, state: FenceState): boolean {
 }
 
 /**
+ * 探测从 start 行开始，是否存在匹配当前围栏的合法闭合标记。
+ * 如果在遇到匹配的闭合标记之前，遇到了另一个明确带语言的新代码块开启（说明前一个代码块未闭合即断裂），返回 -1。
+ */
+export function findMatchingFenceClose(
+  lines: string[],
+  start: number,
+  fence: FenceState,
+): number {
+  for (let k = start; k < lines.length; k++) {
+    const raw = stripLineBreak(lines[k]);
+    const trimmed = raw.trim();
+
+    // 1. 如果遇到了带语言标签的新代码块开启（例如上一块漏闭合，直接开启了新的 ```rust 或 ```python），
+    // 优先表明上一个代码块已非正常中断，绝不能误当成上一个代码块的闭合！
+    const nextOpen = fenceOpen(lines[k]);
+    if (nextOpen && trimmed.length > nextOpen.length) {
+      return -1;
+    }
+
+    // 2. 如果遇到了合法的闭合围栏
+    if (fenceClose(lines[k], fence)) {
+      return k;
+    }
+  }
+  return -1;
+}
+
+const HASH_COMMENT_LANGS = new Set([
+  'python',
+  'py',
+  'bash',
+  'sh',
+  'zsh',
+  'yaml',
+  'yml',
+  'dockerfile',
+  'ruby',
+  'rb',
+  'r',
+  'toml',
+  'ini',
+  'perl',
+  'pl',
+  'powershell',
+  'ps1',
+  'make',
+  'makefile',
+]);
+
+const MARKDOWN_LANGS = new Set(['markdown', 'md', 'mdx', 'mkd']);
+
+/**
  * 结构性终结判定：判断当前行是否为明确的外部顶层块级元素
  * 当处于未闭合代码块内部时，若出现明确的外部顶层标题或新的代码块开启，说明模型遗漏了闭合 ```，必须强制自愈闭合上一个代码块。
  * 严禁将数字序号列表 (1. 2.) 或横线分割线 (---) 作为终结符，否则会导致包含测试日志、终端输出的代码块被腰斩破坏！
@@ -73,14 +128,30 @@ export function isStructuralTerminator(line: string, currentFence: FenceState): 
   const trimmed = line.trim();
   if (!trimmed) return false;
 
-  // 1. 明确的外部 ATX 标题（如 # 标题、#### 2. 标题、#### 3. 标题）
-  if (/^#{1,6}\s+\S+/.test(trimmed)) {
+  // 1. 如果当前代码块前瞻已知在后续有合法闭合标记，绝对不提前腰斩中断
+  if (currentFence.matchingCloseIdx != null && currentFence.matchingCloseIdx >= 0) {
+    return false;
+  }
+
+  // 2. 如果当前代码块是 Markdown 语言本身，里面的任何 Markdown 语法均属合法代码，绝不中断
+  const lang = currentFence.lang?.toLowerCase() ?? '';
+  if (MARKDOWN_LANGS.has(lang)) {
+    return false;
+  }
+
+  // 3. 遇到另一个明确开启新语言代码块的行（例如上一块漏闭合，直接开启新的 ```rust）
+  const opening = fenceOpen(line);
+  if (opening && trimmed.length > opening.length) {
     return true;
   }
 
-  // 2. 另一个新的代码块开启行（例如上一块漏闭合，直接开启新的 ```rust 或 ```python）
-  const opening = fenceOpen(line);
-  if (opening && (opening.marker !== currentFence.marker || trimmed.length > opening.length)) {
+  // 4. 对于以 # 作为注释的语言，普通注释绝对不能当作 ATX 标题中断代码块
+  if (HASH_COMMENT_LANGS.has(lang)) {
+    return false;
+  }
+
+  // 5. 其他非 # 注释语言，若遇到明确的外部顶层大纲标题（如 # 标题、#### 2. 标题）且前面未闭合
+  if (/^#{1,6}\s+\S+/.test(trimmed)) {
     return true;
   }
 
@@ -455,7 +526,8 @@ export function preprocessMarkdown(raw: string): string {
       const markerIdx = line.indexOf(opening.marker);
       const cleanOpen = `${opening.marker.repeat(opening.length)}${line.slice(markerIdx + opening.length)}`;
       result.push(cleanOpen);
-      inFence = opening;
+      const matchIdx = findMatchingFenceClose(lines, i + 1, opening);
+      inFence = { ...opening, matchingCloseIdx: matchIdx };
       continue;
     }
 

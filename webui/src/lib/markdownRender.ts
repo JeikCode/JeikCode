@@ -29,6 +29,24 @@ marked.use({
 
 const renderer = new marked.Renderer();
 
+export function slugifyHeading(text: string): string {
+  const plain = (text ?? '').replace(/<[^>]*>/g, '');
+  return plain
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, '')
+    .replace(/\s+/g, '-');
+}
+
+renderer.heading = function (text: string, level: number, raw?: string) {
+  const plain = (raw || text || '').replace(/<[^>]*>/g, '');
+  const slug = slugifyHeading(plain);
+  const idAttr = slug ? ` id="${slug}"` : '';
+  const altSlug = slug.startsWith('-') ? slug.replace(/^-+/, '') : `-${slug}`;
+  const dataAlt = altSlug && altSlug !== slug ? ` data-alt-id="${altSlug}"` : '';
+  return `<h${level}${idAttr}${dataAlt}>${text}</h${level}>\n`;
+};
+
 const ALERT_TITLES: Record<string, string> = {
   note: 'Note',
   tip: 'Tip',

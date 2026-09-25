@@ -53,7 +53,7 @@ export function Markdown({ content, search }: { content: string; search?: string
     // SECURITY: model output is untrusted — sanitize before injecting as HTML.
     const sanitized = DOMPurify.sanitize(raw, {
       ADD_TAGS: ['math', 'annotation', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'ms', 'mtext', 'mspace', 'mfrac', 'msqrt', 'mroot', 'msub', 'msup', 'msubsup', 'munder', 'mover', 'munderover', 'mtable', 'mtr', 'mtd', 'mstyle'],
-      ADD_ATTR: ['data-copy', 'class', 'checked', 'disabled', 'type', 'align', 'start', 'colspan', 'rowspan', 'style', 'aria-hidden', 'encoding'],
+      ADD_ATTR: ['id', 'data-alt-id', 'data-copy', 'class', 'checked', 'disabled', 'type', 'align', 'start', 'colspan', 'rowspan', 'style', 'aria-hidden', 'encoding'],
     });
     if (search && search.trim()) {
       return highlightHtml(sanitized, search);
@@ -62,7 +62,34 @@ export function Markdown({ content, search }: { content: string; search?: string
   }, [content, search]);
 
   function onClick(e: MouseEvent) {
-    const t = (e.target as HTMLElement)?.closest('.copy-button') as HTMLElement | null;
+    const targetEl = e.target as HTMLElement;
+
+    // 1. 处理内部锚点平滑跳转（如 [中文更新日志](#-中文更新日志-chinese)）
+    const anchor = targetEl?.closest('a[href^="#"]') as HTMLAnchorElement | null;
+    if (anchor) {
+      const rawHash = anchor.getAttribute('href')?.slice(1);
+      if (rawHash) {
+        e.preventDefault();
+        const hash = decodeURIComponent(rawHash);
+        const altHash = hash.startsWith('-') ? hash.slice(1) : `-${hash}`;
+        const container = (e.currentTarget as HTMLElement)?.closest('.messages-container') || document;
+        let target = container.querySelector(`[id="${CSS.escape(hash)}"]`) ||
+          container.querySelector(`[id="${CSS.escape(altHash)}"]`) ||
+          container.querySelector(`[data-alt-id="${CSS.escape(hash)}"]`) ||
+          container.querySelector(`[data-alt-id="${CSS.escape(altHash)}"]`);
+        if (!target && container !== document) {
+          target = document.querySelector(`[id="${CSS.escape(hash)}"]`) ||
+            document.querySelector(`[id="${CSS.escape(altHash)}"]`);
+        }
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
+      return;
+    }
+
+    // 2. 处理代码块 Copy 按钮
+    const t = targetEl?.closest('.copy-button') as HTMLElement | null;
     if (t?.dataset.copy) {
       const text = decodeURIComponent(t.dataset.copy);
       const prev = t.textContent;
