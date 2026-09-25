@@ -112,12 +112,12 @@ or project commit-message rule takes precedence."
 }
 
 pub const CRITICAL_PRECEDENCE_NOTICE: &str =
-    "Critical Precedence: Rules under headers matching `=== ... (*.md) ===` (such as `AGENTS.md`, `rules.md`, `glossary.md`, `=== MEMORY ===`, etc.) constitute USER PROVISIONS. When in conflict with default behaviors, strictly prioritize user provisions.";
+    "Critical Precedence: Rules under <project_instructions> (such as AGENTS.md, rules.md, glossary.md, etc.) or <memory> constitute USER PROVISIONS. When in conflict with default behaviors, strictly prioritize user provisions.";
 
 pub const CRITICAL_PRECEDENCE_NOTICE_EN: &str = CRITICAL_PRECEDENCE_NOTICE;
 
 pub const CRITICAL_PRECEDENCE_NOTICE_ZH: &str =
-    "最高优先级裁决：匹配 `=== ... (*.md) ===` 标题下的规则（如 `AGENTS.md`、`rules.md`、`glossary.md`、`=== MEMORY ===` 等）属于【用户条款】，当与默认行为冲突时，严格优先遵循用户条款。";
+    "最高优先级裁决：匹配 `<project_instructions>` 或 `<memory>` 标题下的规则（如 AGENTS.md、rules.md、glossary.md、memory 等）属于【用户条款】，当与默认行为冲突时，严格优先遵循用户条款。";
 
 pub fn coding_persona(model: &str, todo_enabled: bool, request_user_input_enabled: bool) -> String {
     let (b1, b2) = coding_persona_blocks(model, todo_enabled, request_user_input_enabled);

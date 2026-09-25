@@ -689,7 +689,6 @@ impl Conversation {
     }
 
     /// Canonical ordering priority for multi-segment system blocks.
-    /// Block: Code Tools (`=== CODE TOOLS`) - immediately follows Block 2 Workflow & Discipline
     /// Block 3: Skills Catalog (`=== AVAILABLE SKILLS`)
     /// Block 4: MCP Server Instructions (`=== MCP SERVER INSTRUCTIONS`)
     /// Block 5: Authoritative Project Instructions & Knowledge (`=== AUTHORITATIVE PROJECT INSTRUCTIONS`)
@@ -771,15 +770,27 @@ fn system_block_order(text: &str) -> u8 {
         10
     } else if text.starts_with("<workflow_and_execution_discipline>") {
         20
-    } else if text.starts_with("=== CODE TOOLS") {
-        25
-    } else if text.starts_with("=== AVAILABLE SKILLS") {
+    } else if text.starts_with("<available_skills>") || text.starts_with("=== AVAILABLE SKILLS") {
         30
-    } else if text.starts_with("=== MCP SERVER INSTRUCTIONS") {
+    } else if text.starts_with("<mcp_server_instructions>") || text.starts_with("=== MCP SERVER INSTRUCTIONS") {
         40
-    } else if text.starts_with("=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE") {
+    } else if text.starts_with("<project_instructions>") || text.starts_with("=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE") {
         50
     } else if text.starts_with("=== SESSION BASELINE") || text.starts_with("=== SESSION CONTEXT") {
+        60
+    } else {
+        0
+    }
+}
+
+fn frozen_user_block_order(text: &str) -> u8 {
+    if text.starts_with("<available_skills>") || text.starts_with("=== AVAILABLE SKILLS") {
+        30
+    } else if text.starts_with("<mcp_server_instructions>") || text.starts_with("=== MCP SERVER INSTRUCTIONS") {
+        40
+    } else if text.starts_with("<memory>") || text.starts_with("=== MEMORY ===") {
+        50
+    } else if text.starts_with("<project_instructions>") || text.starts_with("=== AUTHORITATIVE PROJECT INSTRUCTIONS") {
         60
     } else {
         0
@@ -822,32 +833,106 @@ impl Conversation {
     }
 
     /// Insert, refresh, or remove a frozen synthetic-user prefix block identified
-    /// by a stable header (`=== MEMORY ===`, skill catalog, MCP instructions).
+    /// by a stable header (`<memory>`, skill catalog, MCP instructions, project instructions).
+    ///
+    /// Preserves canonical ordering (skills 30 -> MCP 40 -> memory 50 -> project instructions 60)
+    /// within the synthetic user run after leading systems and before the first real user.
     ///
     /// A leftover `Role::System` copy from older sessions is converted (removed
-    /// from the system run, re-inserted as a synthetic user at
-    /// [`Self::frozen_prefix_end`]) so resume stays compaction-safe and does not
-    /// grow a duplicate.
+    /// from the system run, re-inserted as an ordered synthetic user) so resume
+    /// stays compaction-safe and does not grow a duplicate.
     pub fn reconcile_frozen_user_block(&mut self, header: &str, block: Option<String>) {
         let existing = self.find_before_first_real_user(header);
+        let target_order = frozen_user_block_order(header);
+
         match (block, existing) {
-            (Some(text), Some(i))
-                if self.messages[i].role == Role::User
-                    && self.messages[i].synthetic
-                    && self.messages[i].text == text => {}
-            (Some(text), Some(i))
-                if self.messages[i].role == Role::User && self.messages[i].synthetic =>
-            {
-                self.messages[i] = Message::synthetic_user(text);
-            }
             (Some(text), Some(i)) => {
-                self.messages.remove(i);
-                let at = self.frozen_prefix_end();
-                self.messages.insert(at, Message::synthetic_user(text));
+                let is_synthetic_user =
+                    self.messages[i].role == Role::User && self.messages[i].synthetic;
+                let lead_system = self
+                    .messages
+                    .iter()
+                    .take_while(|m| m.role == Role::System)
+                    .count();
+                let first_real_user = self
+                    .messages
+                    .iter()
+                    .position(|m| m.role == Role::User && !m.synthetic)
+                    .unwrap_or(self.messages.len());
+
+                let needs_reorder = if !is_synthetic_user {
+                    true
+                } else if target_order > 0 {
+                    let before_violation = self.messages[lead_system..i].iter().any(|m| {
+                        let o = frozen_user_block_order(&m.text);
+                        o > 0 && o > target_order
+                    });
+                    let after_violation = self.messages[i + 1..first_real_user].iter().any(|m| {
+                        let o = frozen_user_block_order(&m.text);
+                        o > 0 && o < target_order
+                    });
+                    before_violation || after_violation
+                } else {
+                    false
+                };
+
+                if !needs_reorder && self.messages[i].text == text {
+                    // Byte-identical: no-op hot-reload check keeps prefix stable.
+                } else if needs_reorder {
+                    self.messages.remove(i);
+                    let lead_system = self
+                        .messages
+                        .iter()
+                        .take_while(|m| m.role == Role::System)
+                        .count();
+                    let first_real_user = self
+                        .messages
+                        .iter()
+                        .position(|m| m.role == Role::User && !m.synthetic)
+                        .unwrap_or(self.messages.len());
+
+                    let insert_at = if target_order > 0 {
+                        self.messages[lead_system..first_real_user]
+                            .iter()
+                            .position(|m| {
+                                let o = frozen_user_block_order(&m.text);
+                                o > 0 && o > target_order
+                            })
+                            .map(|pos| lead_system + pos)
+                            .unwrap_or(first_real_user)
+                    } else {
+                        first_real_user
+                    };
+                    self.messages.insert(insert_at, Message::synthetic_user(text));
+                } else {
+                    self.messages[i] = Message::synthetic_user(text);
+                }
             }
             (Some(text), None) => {
-                let at = self.frozen_prefix_end();
-                self.messages.insert(at, Message::synthetic_user(text));
+                let lead_system = self
+                    .messages
+                    .iter()
+                    .take_while(|m| m.role == Role::System)
+                    .count();
+                let first_real_user = self
+                    .messages
+                    .iter()
+                    .position(|m| m.role == Role::User && !m.synthetic)
+                    .unwrap_or(self.messages.len());
+
+                let insert_at = if target_order > 0 {
+                    self.messages[lead_system..first_real_user]
+                        .iter()
+                        .position(|m| {
+                            let o = frozen_user_block_order(&m.text);
+                            o > 0 && o > target_order
+                        })
+                        .map(|pos| lead_system + pos)
+                        .unwrap_or(first_real_user)
+                } else {
+                    first_real_user
+                };
+                self.messages.insert(insert_at, Message::synthetic_user(text));
             }
             (None, Some(i)) => {
                 self.messages.remove(i);
@@ -1886,6 +1971,55 @@ mod tests {
         assert!(c.messages[3]
             .text
             .starts_with("=== AUTHORITATIVE PROJECT INSTRUCTIONS"));
+    }
+
+    #[test]
+    fn reconcile_frozen_user_block_in_place_and_ordered() {
+        let mut c = Conversation::new();
+        c.push(Message::system("<environment>\npersona"));
+        c.push(Message::system("<workflow_and_execution_discipline>\nrules"));
+        c.push(Message::user("first real user task"));
+
+        // Insert project instructions (order 60)
+        c.reconcile_frozen_user_block(
+            "<project_instructions>",
+            Some("<project_instructions>\nAGENTS.md".into()),
+        );
+        // Insert memory (order 50) — must precede project_instructions
+        c.reconcile_frozen_user_block(
+            "<memory>",
+            Some("<memory>\n- preference".into()),
+        );
+        // Insert available_skills (order 30) — must precede memory
+        c.reconcile_frozen_user_block(
+            "<available_skills>",
+            Some("<available_skills>\n- skill1".into()),
+        );
+        // Insert mcp_server_instructions (order 40) — must sit between skills and memory
+        c.reconcile_frozen_user_block(
+            "<mcp_server_instructions>",
+            Some("<mcp_server_instructions>\nserver instructions".into()),
+        );
+
+        assert_eq!(c.messages.len(), 7);
+        assert!(c.messages[0].text.starts_with("<environment>"));
+        assert!(c.messages[1].text.starts_with("<workflow_and_execution_discipline>"));
+        assert!(c.messages[2].text.starts_with("<available_skills>"));
+        assert!(c.messages[3].text.starts_with("<mcp_server_instructions>"));
+        assert!(c.messages[4].text.starts_with("<memory>"));
+        assert!(c.messages[5].text.starts_with("<project_instructions>"));
+        assert_eq!(c.messages[6].text, "first real user task");
+
+        // sacred_floor covers systems + all synthetic users + through the first real user: 7
+        assert_eq!(c.sacred_floor(), 7);
+
+        // Hot-reload memory in place:
+        c.reconcile_frozen_user_block(
+            "<memory>",
+            Some("<memory>\n- updated preference".into()),
+        );
+        assert_eq!(c.messages.len(), 7, "no growth on refresh");
+        assert_eq!(c.messages[4].text, "<memory>\n- updated preference");
     }
 
     #[test]

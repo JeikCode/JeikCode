@@ -1,14 +1,12 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
-use jeikcode_capabilities::mcp::registry::{
-    MAX_TOTAL_INSTRUCTIONS_CHARS, MCP_SERVER_INSTRUCTIONS_TAG,
-};
+use jeikcode_capabilities::mcp::registry::MAX_TOTAL_INSTRUCTIONS_CHARS;
 use jeikcode_capabilities::mcp::McpRegistry;
 use jeikcode_kernel::hook::LifecycleHooks;
 use jeikcode_kernel::message::Conversation;
 
-pub const MCP_INSTRUCTIONS_HEADER: &str = "=== MCP SERVER INSTRUCTIONS ===";
+pub const MCP_INSTRUCTIONS_HEADER: &str = "<mcp_server_instructions>";
 
 /// Injects the connected servers' current instructions into the session's
 /// independent system block (Block 4, order 40) at `session_start` and `turn_start`.
@@ -51,9 +49,10 @@ impl McpInstructionsHook {
         // registries, joining them unchecked would double the prompt budget.
         // Truncate only the inner untrusted payload; the outer security tag
         // remains structurally complete.
+        // Only wrap in single outer XML tag <mcp_server_instructions>, without redundant inner tags
         let instructions = truncate_combined_instructions(instructions.join("\n\n"));
         Some(format!(
-            "{MCP_INSTRUCTIONS_HEADER}\n<{MCP_SERVER_INSTRUCTIONS_TAG}>\n{instructions}\n</{MCP_SERVER_INSTRUCTIONS_TAG}>"
+            "{MCP_INSTRUCTIONS_HEADER}\n{instructions}\n</mcp_server_instructions>"
         ))
     }
 
@@ -69,11 +68,14 @@ impl McpInstructionsHook {
             }
             *last = Some(next.clone());
         }
-        // Clean up legacy frozen user blocks from earlier versions if resuming
-        convo.reconcile_frozen_user_block(MCP_INSTRUCTIONS_HEADER, None);
-        convo.reconcile_frozen_user_block("<mcp-server-instructions>", None);
-        // Reconcile as independent system block (Block 4)
-        convo.reconcile_system_block(MCP_INSTRUCTIONS_HEADER, next);
+        // Clean up legacy system blocks from earlier versions if resuming
+        convo.reconcile_system_block(MCP_INSTRUCTIONS_HEADER, None);
+        convo.reconcile_system_block("=== MCP SERVER INSTRUCTIONS ===", None);
+        convo.reconcile_system_block("<mcp-server-instructions>", None);
+        // Clean up legacy headers
+        convo.reconcile_frozen_user_block("=== MCP SERVER INSTRUCTIONS ===", None);
+        // Reconcile as ordered frozen synthetic user block (Block 4)
+        convo.reconcile_frozen_user_block(MCP_INSTRUCTIONS_HEADER, next);
     }
 }
 
@@ -123,13 +125,15 @@ mod tests {
 
         // Test with actual instructions
         let mut convo2 = convo_with_persona();
-        convo2.reconcile_system_block(
+        convo2.reconcile_frozen_user_block(
             MCP_INSTRUCTIONS_HEADER,
-            Some(format!("{MCP_INSTRUCTIONS_HEADER}\n<mcp-server-instructions>\nTool guide\n</mcp-server-instructions>")),
+            Some(format!("{MCP_INSTRUCTIONS_HEADER}\nTool guide\n</mcp_server_instructions>")),
         );
         assert_eq!(convo2.messages.len(), 3);
-        assert_eq!(convo2.messages[1].role, Role::System);
+        assert_eq!(convo2.messages[1].role, Role::User);
+        assert!(convo2.messages[1].synthetic);
         assert!(convo2.messages[1].text.starts_with(MCP_INSTRUCTIONS_HEADER));
+        assert_eq!(convo2.sacred_floor(), 3);
     }
 
     #[test]

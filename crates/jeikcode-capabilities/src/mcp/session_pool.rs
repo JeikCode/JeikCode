@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 
 use super::registry::McpRegistry;
-use super::schema_cache::{ensure_session_mcp_schema, SessionMcpSchemaSnapshot};
+use super::schema_cache::{cached_session_mcp_schema, ensure_session_mcp_schema, SessionMcpSchemaSnapshot};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct SessionMcpKey {
@@ -91,12 +91,15 @@ impl SessionMcpPool {
     /// exactly one isolated registry; different sessions never share transports.
     /// A zero-owner entry is reused until [`Self::retire_session`] so an already
     /// started process survives runtime handoff and host idle.
+    /// Acquire one owner lease without blocking on initial schema probing if cached.
+    /// When no cached schema exists, uses an empty snapshot so startup remains instantaneous;
+    /// the background probe task will hydrate the registry once ready.
     pub async fn acquire(
         self: &Arc<Self>,
         project_dir: &Path,
         session_id: &str,
     ) -> SessionMcpLease {
-        let snapshot = ensure_session_mcp_schema(project_dir).await;
+        let cached = cached_session_mcp_schema(project_dir).await;
         let key = SessionMcpKey {
             project_dir: project_key(project_dir),
             session_id: session_id.to_string(),
@@ -123,10 +126,18 @@ impl SessionMcpPool {
             }
         };
         drop(_lifecycle);
-        generation
-            .registry
-            .apply_session_config_diff(&snapshot)
-            .await;
+        if let Some(snapshot) = cached {
+            generation
+                .registry
+                .apply_session_config_diff(&snapshot)
+                .await;
+        } else {
+            // Trigger asynchronous background probe without blocking interactive boot
+            let bg_dir = project_dir.to_path_buf();
+            tokio::spawn(async move {
+                let _ = ensure_session_mcp_schema(&bg_dir).await;
+            });
+        }
         SessionMcpLease {
             key: Some(key),
             generation,

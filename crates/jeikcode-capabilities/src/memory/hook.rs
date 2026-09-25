@@ -22,7 +22,7 @@ use super::MemoryStore;
 
 /// The fixed first line of `MemoryStore::merged_for_prompt` output — how the hook
 /// recognizes ITS message in a resumed snapshot. Guarded against drift by a test.
-const MEMORY_HEADER: &str = "=== MEMORY ===";
+const MEMORY_HEADER: &str = "<memory>";
 
 /// Pushes/refreshes `MemoryStore::merged_for_prompt(global, project, …)` as a
 /// frozen synthetic-user prefix message at session start; silent when both
@@ -67,6 +67,11 @@ impl MemoryHook {
 #[async_trait]
 impl LifecycleHooks for MemoryHook {
     async fn session_start(&self, convo: &mut Conversation, _resumed: bool) {
+        // Clean up legacy header formats if resuming
+        convo.reconcile_frozen_user_block("=== MEMORY ===", None);
+        convo.reconcile_system_block(MEMORY_HEADER, None);
+        convo.reconcile_system_block("=== MEMORY ===", None);
+
         let merged =
             MemoryStore::merged_for_prompt(&self.global, &self.project, &self.project_name);
         let block = if merged.is_empty() {

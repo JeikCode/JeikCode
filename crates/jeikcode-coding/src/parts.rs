@@ -673,7 +673,6 @@ async fn prepare_with_plugin_hooks_reusing_lease(
     //    sacred_floor — compaction cannot drain it.
     // 2b. SkillCatalogHook — session_start: inject AVAILABLE SKILLS catalog as an
     //    independent System block (Block 3, order 30).
-    // 2b2. CodeToolsHook — leading-System `=== CODE TOOLS ===` routing card (Block 2.5, order 25).
     // 2c. McpInstructionsHook — session_start / turn_start: inject MCP server
     //     instructions as an independent System block (Block 4, order 40).
     // 3. SnapshotHook  — turn_complete: persist .snapshot + .meta.
@@ -707,9 +706,6 @@ async fn prepare_with_plugin_hooks_reusing_lease(
     let has_skills = skill_catalog.as_ref().is_some_and(|c| !c.trim().is_empty());
     hooks.push(Arc::new(SkillCatalogHook::new(skill_catalog)));
     let code_explore_mounted = names.iter().any(|n| n == "code_explore");
-    hooks.push(Arc::new(crate::code_tools::CodeToolsHook::new(
-        code_explore_mounted,
-    )));
     let mcp_registries: Vec<_> = mcp_registry
         .iter()
         .chain(session_mcp_registry.iter())

@@ -37,7 +37,7 @@ const GIT_SECTION_SEP: &str = "\n\n=== GIT STATUS";
 /// Header for optional client-supplied system text (OpenAI/Anthropic compat API).
 /// Appended after AGENTS / glossary / db packs so it sits at the bottom of the
 /// instruction stack without overriding project knowledge.
-pub const CLIENT_SYSTEM_HEADER: &str = "=== CLIENT SYSTEM INSTRUCTIONS ===";
+pub const CLIENT_SYSTEM_HEADER: &str = "# CLIENT SYSTEM INSTRUCTIONS";
 
 pub struct SessionContextHook {
     working_dir: PathBuf,
@@ -86,9 +86,12 @@ impl SessionContextHook {
         let mut instr = render_instructions(&self.home, &self.working_dir);
         if let Some(extra) = &self.extra_append {
             if instr.is_empty() {
-                instr = format!("{INSTRUCTIONS_HEADER}\n\n{CLIENT_SYSTEM_HEADER}\n{extra}");
+                instr = format!("{INSTRUCTIONS_HEADER}\n\n# CLIENT SYSTEM INSTRUCTIONS\n{extra}\n</project_instructions>");
+            } else if instr.ends_with("</project_instructions>") {
+                let stripped = instr.trim_end_matches("</project_instructions>").trim_end();
+                instr = format!("{stripped}\n\n# CLIENT SYSTEM INSTRUCTIONS\n{extra}\n</project_instructions>");
             } else {
-                instr.push_str(&format!("\n\n{CLIENT_SYSTEM_HEADER}\n{extra}"));
+                instr.push_str(&format!("\n\n# CLIENT SYSTEM INSTRUCTIONS\n{extra}"));
             }
         }
         if instr.trim().is_empty() {
@@ -188,8 +191,12 @@ impl SessionContextHook {
 impl LifecycleHooks for SessionContextHook {
     async fn session_start(&self, convo: &mut Conversation, _resumed: bool) {
         // Reconcile instructions as frozen synthetic user block (inside sacred_floor),
-        // cleaning up any legacy System-role instructions.
+        // cleaning up any legacy System-role instructions and legacy headers.
         convo.reconcile_system_block(INSTRUCTIONS_HEADER, None);
+        convo.reconcile_system_block("=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===", None);
+        convo.reconcile_system_block("=== AUTHORITATIVE PROJECT INSTRUCTIONS", None);
+        convo.reconcile_frozen_user_block("=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===", None);
+        convo.reconcile_frozen_user_block("=== AUTHORITATIVE PROJECT INSTRUCTIONS", None);
         convo.reconcile_frozen_user_block(INSTRUCTIONS_HEADER, self.render_instructions_block());
 
         // Operating environment facts (Platform, Command habit, Working directory, Git branch)
@@ -203,6 +210,10 @@ impl LifecycleHooks for SessionContextHook {
         // Hot-reload: mtime cache makes unchanged files free; reconcile is a
         // no-op when the rendered block is byte-identical.
         convo.reconcile_system_block(INSTRUCTIONS_HEADER, None);
+        convo.reconcile_system_block("=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===", None);
+        convo.reconcile_system_block("=== AUTHORITATIVE PROJECT INSTRUCTIONS", None);
+        convo.reconcile_frozen_user_block("=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===", None);
+        convo.reconcile_frozen_user_block("=== AUTHORITATIVE PROJECT INSTRUCTIONS", None);
         convo.reconcile_frozen_user_block(INSTRUCTIONS_HEADER, self.render_instructions_block());
         convo.reconcile_system_block(BASELINE_HEADER, None);
         convo.reconcile_system_block(LEGACY_CONTEXT_HEADER, None);

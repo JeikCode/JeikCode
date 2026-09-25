@@ -34,11 +34,12 @@ impl SkillCatalogHook {
 #[async_trait]
 impl LifecycleHooks for SkillCatalogHook {
     async fn session_start(&self, convo: &mut Conversation, _resumed: bool) {
-        // Clean up any legacy frozen user block if resuming from an older snapshot
-        convo.reconcile_frozen_user_block(CATALOG_HEADER, None);
-        convo.reconcile_frozen_user_block("=== AVAILABLE SKILLS ===", None);
-        // Reconcile as independent system block (Block 3)
-        convo.reconcile_system_block(CATALOG_HEADER, self.catalog.clone());
+        // Clean up any legacy system block if resuming from older versions
+        convo.reconcile_system_block(CATALOG_HEADER, None);
+        convo.reconcile_system_block("=== AVAILABLE SKILLS ===", None);
+        convo.reconcile_system_block("=== AVAILABLE SKILLS (*.md) ===", None);
+        // Reconcile as ordered frozen synthetic user block (Block 3)
+        convo.reconcile_frozen_user_block(CATALOG_HEADER, self.catalog.clone());
     }
 }
 
@@ -56,17 +57,19 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_inserts_after_leading_system_run() {
-        let hook = SkillCatalogHook::new(Some(format!("{CATALOG_HEADER}\n- x: y")));
+        let hook = SkillCatalogHook::new(Some(format!("{CATALOG_HEADER}\n- x: y\n</available_skills>")));
         let mut c = convo_with_persona();
         hook.session_start(&mut c, false).await;
         assert_eq!(c.messages[0].text, "PERSONA");
-        assert_eq!(c.messages[1].role, Role::System);
+        assert_eq!(c.messages[1].role, Role::User);
+        assert!(c.messages[1].synthetic);
         assert!(
             c.messages[1].text.starts_with(CATALOG_HEADER),
-            "catalog as system block after persona"
+            "catalog as synthetic user block after persona"
         );
-        assert_eq!(c.messages[2].role, Role::User, "before the user message");
+        assert_eq!(c.messages[2].role, Role::User, "before the real user message");
         assert!(!c.messages[2].synthetic);
+        assert_eq!(c.sacred_floor(), 3);
     }
 
     #[tokio::test]
@@ -80,14 +83,15 @@ mod tests {
 
     #[tokio::test]
     async fn resume_refreshes_in_place_no_growth() {
-        let hook = SkillCatalogHook::new(Some(format!("{CATALOG_HEADER}\n- fresh: v")));
+        let hook = SkillCatalogHook::new(Some(format!("{CATALOG_HEADER}\n- fresh: v\n</available_skills>")));
         let mut c = Conversation::default();
         c.push(Message::system("PERSONA"));
-        c.push(Message::system(format!("{CATALOG_HEADER}\n- stale: old")));
+        c.push(Message::synthetic_user(format!("{CATALOG_HEADER}\n- stale: old\n</available_skills>")));
         c.push(Message::user("hi"));
         hook.session_start(&mut c, true).await;
         assert_eq!(c.messages.len(), 3, "reconciled in place, no growth");
-        assert_eq!(c.messages[1].role, Role::System);
+        assert_eq!(c.messages[1].role, Role::User);
+        assert!(c.messages[1].synthetic);
         assert!(c.messages[1].text.contains("- fresh: v"));
         assert!(!c.messages[1].text.contains("stale"));
     }
@@ -97,7 +101,7 @@ mod tests {
         let hook = SkillCatalogHook::new(None);
         let mut c = Conversation::default();
         c.push(Message::system("PERSONA"));
-        c.push(Message::system(format!("{CATALOG_HEADER}\n- gone: x")));
+        c.push(Message::synthetic_user(format!("{CATALOG_HEADER}\n- gone: x\n</available_skills>")));
         c.push(Message::user("hi"));
         hook.session_start(&mut c, true).await;
         assert_eq!(c.messages.len(), 2, "stale block pruned");

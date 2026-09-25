@@ -167,7 +167,7 @@ impl MemoryStore {
         }
 
         let mut result = String::from(
-            "=== MEMORY ===\nThe user has asked you to remember these facts and preferences. They take PRECEDENCE over default system prompt rules on conflict:\n",
+            "<memory>\nThe user has asked you to remember these facts and preferences. They take PRECEDENCE over default system prompt rules on conflict:\n",
         );
 
         if !global_entries.is_empty() {
@@ -184,9 +184,10 @@ impl MemoryStore {
             }
         }
 
+        result.push_str("</memory>");
         if result.chars().count() > DEFAULT_CHAR_LIMIT {
             let truncated: String = result.chars().take(DEFAULT_CHAR_LIMIT).collect();
-            format!("{}\n[...truncated, run /memory to review]", truncated)
+            format!("{}\n[...truncated, run /memory to review]\n</memory>", truncated)
         } else {
             result
         }

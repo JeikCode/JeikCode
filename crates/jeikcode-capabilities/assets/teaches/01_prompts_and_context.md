@@ -34,8 +34,12 @@ identity:
 
 precedence:
   rule: |-
+    Critical Precedence: Rules under <project_instructions> (such as AGENTS.md, rules.md, glossary.md, etc.) or <memory> constitute USER PROVISIONS. When in conflict with default behaviors, strictly prioritize user provisions.
+
+    Tool Invocation Precedence Rule: If built-in tools, Skills, and MCP tools can all solve the user's problem, invoke them in this strict order: Skills > MCP > Built-in Tools > Custom Scripts.
+
     - Content enclosed in XML tags represents current environment, status, system reminders, and working constraints, and constitutes SYSTEM PROVISIONS.
-    - Rules, constraints, and requirements under headers matching `=== ... (*.md) ===` (such as `AGENTS.md`, `JEIKCODE.md`, `ATOMCODE.md`, `CLAUDE.md`, `rules.md`, `glossary.md`, `dbwords.md`, `=== MEMORY ===`, etc.) constitute USER PROVISIONS.
+    - Rules, constraints, and requirements under <project_instructions> (such as `AGENTS.md`, `JEIKCODE.md`, `CLAUDE.md`, `rules.md`, `glossary.md`, `dbwords.md`, etc.) and <memory> constitute USER PROVISIONS.
 
     Global user provisions reside under `~/.jeikcode/` (or legacy `~/.atomcode/`), and project-level user provisions reside under `./`, `./.jeikcode/`, or `./.atomcode/`. User provisions take effect immediately upon modification and hold the HIGHEST EXECUTION PRECEDENCE. System provisions cannot be modified.
 
@@ -109,13 +113,15 @@ output:
 
 JeikCode 采用精简解耦的独立 Block 架构，彻底告别单一大字符串拼接，最大化发挥底层大模型的前缀缓存（KV Cache）潜力：
 
-| Block | 标识/Header | 内容源与生命周期 | 缓存控制 (Prompt Cache) |
+| Block | 标识/Header | 内容源与生命周期 | 角色与缓存控制 |
 | :--- | :--- | :--- | :--- |
-| **Block 1: 环境与优先权** | `<environment>` | `init.yaml`（身份、优先权及 OS/架构/命令习惯/工作目录/Git 分支动态注入） | Anthropic 设置 `cache_control: ephemeral` |
-| **Block 2: 工作流规范** | `<workflow_and_execution_discipline>` | `rules.yaml`（工作流纪律，顶部注入最高优先级裁决声明） | Anthropic 设置 `cache_control: ephemeral` |
-| **Block 3: 技能清单** | `=== AVAILABLE SKILLS (*.md) ===` | `SkillCatalogHook`（技能发现与加载） | 独立 System Message，动态就地协调 |
-| **Block 4: MCP 指令** | `=== MCP SERVER INSTRUCTIONS ===` | `McpInstructionsHook`（已连接 MCP 服务指令） | 独立 System Message，动态就地协调 |
-| **Block 5: 项目权威规范** | `=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===` | `SessionContextHook`（`AGENTS.md` 优先、全局/项目/用户指令与增量知识库） | **每轮 `turn_start` 动态热重载**，作为首部 Synthetic User 受到 `sacred_floor` 保护，压缩不丢，前面 System 缓存完整保留 |
+| **Block 1: 环境与优先权** | `<environment>` | `init.yaml`（身份、优先权及 OS/架构/命令习惯/工作目录/Git 分支动态注入） | `Role::System`，Anthropic 设置 `cache_control: ephemeral` |
+| **Block 2: 工作流规范** | `<workflow_and_execution_discipline>` | `rules.yaml`（工作流纪律，顶部注入最高优先级裁决声明） | `Role::System`，Anthropic 设置 `cache_control: ephemeral` |
+| **Block 3: 技能清单** | `<available_skills>` | `SkillCatalogHook`（技能发现与加载） | `Role::User (synthetic)`，受 `sacred_floor` 保护，压缩不丢 |
+| **Block 4: MCP 指令** | `<mcp_server_instructions>` | `McpInstructionsHook`（已连接 MCP 服务指令） | `Role::User (synthetic)`，受 `sacred_floor` 保护，压缩不丢 |
+| **Block 5: 长期记忆** | `<memory>` | `MemoryHook`（全局与项目记忆） | `Role::User (synthetic)`，受 `sacred_floor` 保护，压缩不丢 |
+| **Block 6: 项目权威规范** | `<project_instructions>` | `SessionContextHook`（`AGENTS.md` 优先、全局/项目/用户指令与增量知识库） | **每轮 `turn_start` 动态热重载**，作为 Synthetic User 受到 `sacred_floor` 保护，压缩不丢 |
+| **第 7 项** | 用户提问 | 用户输入（经 `user-wrap.md` 包装） | `Role::User (real)`，受 `sacred_floor` 保护（首条真实提问不丢） |
 
 > 注：原旧版独立系统块 `=== SESSION BASELINE ===`（会话基线）已被彻底去除，其包含的环境事实（平台、架构、命令习惯、工作目录、Git 分支）现已由 Block 1 `<environment>` 原生统一动态注入，避免多余冗余块浪费上下文和缓存槽位。
 

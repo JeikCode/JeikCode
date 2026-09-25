@@ -94,11 +94,12 @@ async fn drive_and_collect_results(max_cap: Option<usize>, huge_size: usize) -> 
             .iter()
             .find(|m| matches!(m.role, jeikcode_kernel::message::Role::Tool))
             .expect("a tool-result message must be in the round-2 history");
-        // What the model sees must equal what the driver received (both capped).
+        // What the model sees is pruned for wire if oversized (>24KB), whereas outcome.tool_results preserves full output.
         if let Some(first) = outcome.tool_results.first() {
+            let expected_wire_text = jeikcode_kernel::message::adaptive_prune_tool_output_for_llm(&first.content, false);
             assert_eq!(
-                tool_msg.text, first.content,
-                "the stored/model-visible tool result must match the emitted (capped) result"
+                tool_msg.text, expected_wire_text,
+                "the model-visible tool result must match the wire-pruned result"
             );
         }
     }
