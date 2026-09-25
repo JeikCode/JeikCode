@@ -685,21 +685,13 @@ fn format_messages(
 ) -> (Vec<String>, Vec<Value>) {
     // Leading System messages lift to the top-level `system` block array. Anthropic has no
     // system message ROLE on the wire.
-    let mut system_blocks: Vec<String> = messages
+    let system_blocks: Vec<String> = messages
         .iter()
         .filter(|m| m.role == Role::System)
         .map(|m| m.text.trim())
         .filter(|t| !t.is_empty())
         .map(|s| s.to_string())
         .collect();
-
-    // Frozen-prefix synthetic Users (Block 5 AGENTS.md / glossary, plus memory.md) stay as
-    // synthetic User in the kernel conversation (sacred_floor / resume / OpenAI-compat).
-    // On the Anthropic wire they must NOT enter `messages[]`: adjacent users would be glued
-    // by `merge_consecutive_user` and pollute the real human prompt. Lift them as trailing
-    // top-level `system` text blocks so the user turn stays pure.
-    const INSTRUCTIONS_HEADER: &str = "=== AUTHORITATIVE PROJECT INSTRUCTIONS";
-    const MEMORY_HEADER: &str = "=== MEMORY ===";
 
     let mut out: Vec<Value> = Vec::with_capacity(messages.len());
     let mut i = 0;
@@ -708,17 +700,6 @@ fn format_messages(
         match m.role {
             Role::System => {} // lifted above
             Role::User => {
-                if m.synthetic
-                    && (m.text.starts_with(INSTRUCTIONS_HEADER)
-                        || m.text.starts_with(MEMORY_HEADER))
-                {
-                    let trimmed = m.text.trim();
-                    if !trimmed.is_empty() {
-                        system_blocks.push(trimmed.to_string());
-                    }
-                    i += 1;
-                    continue;
-                }
                 out.push(format_user_message(m));
                 i += 1;
                 continue;
@@ -787,18 +768,11 @@ fn merge_consecutive_user(messages: Vec<Value>) -> Vec<Value> {
     out
 }
 
-/// Combine two user `content` values. Both strings → joined string (blank-line separated,
-/// keeping the cache-friendly string form). Otherwise → ONE array of blocks (a non-empty
-/// string becomes a `{type:"text"}` block; existing arrays are concatenated).
+/// Combine two user `content` values into ONE array of blocks.
+/// Each user message preserves its discrete block boundary (e.g. project instructions
+/// as the first block and user input as the second block), adhering to cache stability
+/// and block-level compaction protection.
 fn merge_user_content(a: Value, b: Value) -> Value {
-    if let (Some(sa), Some(sb)) = (a.as_str(), b.as_str()) {
-        let joined = if sa.is_empty() || sb.is_empty() {
-            format!("{sa}{sb}")
-        } else {
-            format!("{sa}\n\n{sb}")
-        };
-        return Value::String(joined);
-    }
     let mut blocks = content_to_blocks(a);
     blocks.extend(content_to_blocks(b));
     Value::Array(blocks)
@@ -1485,7 +1459,11 @@ mod tests {
         assert_eq!(out.len(), 1, "three consecutive users → one");
         assert_eq!(
             out[0]["content"],
-            json!("prompt1\n\nsummary of prior work\n\nfollow up")
+            json!([
+                {"type": "text", "text": "prompt1"},
+                {"type": "text", "text": "summary of prior work"},
+                {"type": "text", "text": "follow up"}
+            ])
         );
     }
 
@@ -1501,13 +1479,16 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0]["content"],
-            json!("<system-reminder>\nCurrent date: 2026-08-22\n</system-reminder>\n\nthe real question"),
-            "merged Anthropic user block must end with the real query"
+            json!([
+                {"type": "text", "text": "<system-reminder>\nCurrent date: 2026-08-22\n</system-reminder>"},
+                {"type": "text", "text": "the real question"}
+            ]),
+            "merged Anthropic user block must preserve discrete blocks"
         );
     }
 
     #[test]
-    fn memory_and_instructions_lift_to_trailing_system_not_user() {
+    fn memory_and_instructions_stay_as_discrete_user_blocks_not_system() {
         let msgs = vec![
             Message::system("be terse"),
             Message::synthetic_user(
@@ -1519,19 +1500,25 @@ mod tests {
         let (system, out) = format_messages(&msgs, false);
         assert_eq!(
             system,
-            vec![
-                "be terse".to_string(),
-                "=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===\nagents".to_string(),
-                "=== MEMORY ===\n- prefers tabs".to_string(),
-            ],
-            "frozen prefix synthetic users become trailing Anthropic system blocks"
+            vec!["be terse".to_string()],
+            "only true system messages stay in system blocks"
         );
-        assert_eq!(out.len(), 1);
+        assert_eq!(out.len(), 1, "consecutive users fold into one user turn");
+        assert_eq!(out[0]["role"], "user");
+        let content = out[0]["content"]
+            .as_array()
+            .expect("must be array of blocks");
         assert_eq!(
-            out[0],
-            json!({"role":"user","content":"the real question"}),
-            "real user message stays pure — no MEMORY / AGENTS glue"
+            content.len(),
+            3,
+            "preserves instructions, memory, and query as distinct blocks"
         );
+        assert_eq!(
+            content[0]["text"],
+            "=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===\nagents"
+        );
+        assert_eq!(content[1]["text"], "=== MEMORY ===\n- prefers tabs");
+        assert_eq!(content[2]["text"], "the real question");
     }
 
     fn line(event: &str, v: Value) -> String {
@@ -2689,5 +2676,35 @@ mod tests {
             head.contains("user-agent: jeikcode/9.9.9"),
             "product UA must be sent: {head}"
         );
+    }
+
+    #[test]
+    fn test_project_instructions_stay_as_first_user_block_and_merge_with_user_input() {
+        let msgs = vec![
+            Message::system("<environment>env</environment>"),
+            Message::synthetic_user(
+                "=== AUTHORITATIVE PROJECT INSTRUCTIONS & KNOWLEDGE (*.md) ===\nagents",
+            ),
+            Message::user("hello world"),
+        ];
+        let (sys, wire_msgs) = format_messages(&msgs, false);
+        assert_eq!(sys, vec!["<environment>env</environment>"]);
+        assert_eq!(
+            wire_msgs.len(),
+            1,
+            "consecutive users must be merged into one user message"
+        );
+        assert_eq!(wire_msgs[0]["role"], "user");
+        let content = wire_msgs[0]["content"]
+            .as_array()
+            .expect("must be array of blocks");
+        assert_eq!(content.len(), 2, "must contain two distinct blocks");
+        assert_eq!(content[0]["type"], "text");
+        assert!(content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("AUTHORITATIVE PROJECT INSTRUCTIONS"));
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "hello world");
     }
 }
