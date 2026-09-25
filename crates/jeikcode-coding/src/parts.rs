@@ -1286,6 +1286,14 @@ async fn publish_ready_mcp_tools(
                     self.catalog_publisher.publish(&self.tool_registry, &refs);
                 }
             }
+
+            fn is_tool_active(&self, tool_name: &str) -> bool {
+                if let Ok(current) = self.mcp_tool_names.read() {
+                    current.contains(&tool_name.to_string()) || self.base_names.contains(&tool_name.to_string())
+                } else {
+                    false
+                }
+            }
         }
 
         let activator = Arc::new(DynamicCatalogActivator {
@@ -1297,12 +1305,20 @@ async fn publish_ready_mcp_tools(
 
         tool_registry.register(Arc::new(jeikcode_capabilities::tools::ToolSearchTool::new(
             mcp_index,
+        )));
+
+        tool_registry.register(Arc::new(jeikcode_capabilities::tools::ToolBatchLoadAndExecTool::new(
+            tool_registry.clone(),
+            mcp_registries.clone(),
             Some(activator),
         )));
 
         let mut selected = base_names;
         if !selected.contains(&"tool_search".to_string()) {
             selected.push("tool_search".to_string());
+        }
+        if !selected.contains(&"tool_batch_load_and_exec".to_string()) {
+            selected.push("tool_batch_load_and_exec".to_string());
         }
         let refs: Vec<&str> = selected.iter().map(String::as_str).collect();
         catalog_publisher.publish(&tool_registry, &refs);

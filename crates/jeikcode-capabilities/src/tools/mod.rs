@@ -66,6 +66,7 @@ pub mod sensitive_path;
 pub(crate) mod shell_route;
 pub mod task;
 pub mod todo;
+pub mod tool_load_and_exec;
 pub mod tool_search;
 /// Network tools (`web_fetch` / `web_search`). Opt-in `web` feature (HTTP stack).
 #[cfg(feature = "web")]
@@ -114,7 +115,8 @@ pub use todo::{
     bind_todowrite, is_todo_tool_name, todo_action_kind, TodoLive, TodoTool, TODO_TOOL_ALIASES,
     TODO_TOOL_NAME,
 };
-pub use tool_search::{ToolMountActivator, ToolSearchTool};
+pub use tool_load_and_exec::{ToolBatchLoadAndExecTool, ToolLoadInvocation, ToolMountActivator};
+pub use tool_search::ToolSearchTool;
 #[cfg(feature = "web")]
 pub use web_fetch::WebFetchTool;
 #[cfg(feature = "web")]
@@ -153,6 +155,7 @@ pub fn coding_tool_names() -> &'static [&'static str] {
             "global_search_replace",
             "todo_write",
             "tool_search",
+            "tool_batch_load_and_exec",
             "jeikcode_config_guide",
             "jeikcode_config_reload",
             "fetch_output",
@@ -176,6 +179,7 @@ pub fn coding_tool_names() -> &'static [&'static str] {
             "global_search_replace",
             "todo_write",
             "tool_search",
+            "tool_batch_load_and_exec",
             "jeikcode_config_guide",
             "jeikcode_config_reload",
             "fetch_output",
@@ -210,6 +214,10 @@ pub fn register_coding_tools_with_vision(reg: &mut ToolRegistry, vision: bool) {
     reg.register(Arc::new(GlobalSearchReplaceTool));
     reg.register(Arc::new(ToolSearchTool::new(
         std::sync::Arc::new(crate::mcp::McpToolIndex::new()),
+    )));
+    reg.register(Arc::new(ToolBatchLoadAndExecTool::new(
+        reg.clone(),
+        Vec::new(),
         None,
     )));
     reg.register(Arc::new(JeikcodeConfigGuideTool::new()));
@@ -905,6 +913,7 @@ mod tests {
         "global_search_replace",
         "todo_write",
         "tool_search",
+        "tool_batch_load_and_exec",
         "jeikcode_config_guide",
         "jeikcode_config_reload",
     ];

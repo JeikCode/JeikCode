@@ -8,22 +8,16 @@ use serde_json::Value;
 use jeikcode_kernel::tool::{Tool, ToolContext, ToolResult};
 use crate::mcp::McpToolIndex;
 
-/// Callback interface for dynamically mounting tools into active execution.
-#[async_trait]
-pub trait ToolMountActivator: Send + Sync {
-    /// Request that tools with the given names be mounted into the active catalog.
-    async fn activate_tools(&self, tool_names: &[String]);
-}
-
 /// Dynamic MCP Tool Search Tool using bilingual thesaurus & dense embeddings.
+/// Pure read-only discovery: searches and formats definitions so the model or
+/// user can decide which tools to invoke via `tool_batch_load_and_exec`.
 pub struct ToolSearchTool {
     index: Arc<McpToolIndex>,
-    activator: Option<Arc<dyn ToolMountActivator>>,
 }
 
 impl ToolSearchTool {
-    pub fn new(index: Arc<McpToolIndex>, activator: Option<Arc<dyn ToolMountActivator>>) -> Self {
-        Self { index, activator }
+    pub fn new(index: Arc<McpToolIndex>) -> Self {
+        Self { index }
     }
 }
 
@@ -44,11 +38,11 @@ impl Tool for ToolSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Discover and dynamically activate deferred tools. \
-        Use this tool when a user task needs external capabilities (such as web browsing, \
-        database access, spreadsheets, email, or third-party MCP servers) that are not present \
-        in the default tools list. Once activated, the tools become directly callable in the next round. \
-        Supports bilingual natural language queries (both Chinese and English) or exact tool names."
+        "Discover available deferred tools. Use this tool when a user task needs external \
+        capabilities (such as web browsing, database access, spreadsheets, email, or third-party MCP servers) \
+        that are not present in the current active tools list. \
+        This tool returns the tool names, descriptions, parameter schemas, and workflow guidance. \
+        To execute and mount tools discovered here, call `tool_batch_load_and_exec`."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -123,14 +117,7 @@ impl Tool for ToolSearchTool {
             };
         }
 
-        let tool_names: Vec<String> = matched.iter().map(|item| item.full_name.clone()).collect();
-
-        // 3. Trigger activation via activator if wired
-        if let Some(activator) = &self.activator {
-            activator.activate_tools(&tool_names).await;
-        }
-
-        let mut out = String::from("Successfully discovered and activated the following tools for subsequent turns:\n\n");
+        let mut out = String::from("Found matching deferred tools. To execute and mount any of these, call `tool_batch_load_and_exec`:\n\n");
         let mut seen_servers = std::collections::HashSet::new();
 
         for tool in &matched {
@@ -165,22 +152,9 @@ impl Tool for ToolSearchTool {
 mod tests {
     use super::*;
     use crate::mcp::client::McpToolInfo;
-    use tokio::sync::Mutex;
-
-    struct MockActivator {
-        activated: Arc<Mutex<Vec<String>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl ToolMountActivator for MockActivator {
-        async fn activate_tools(&self, tool_names: &[String]) {
-            let mut list = self.activated.lock().await;
-            list.extend(tool_names.iter().cloned());
-        }
-    }
 
     #[tokio::test]
-    async fn test_tool_search_and_mount_activation() {
+    async fn test_tool_search_pure_discovery() {
         let index = Arc::new(McpToolIndex::new());
         let tools = vec![
             McpToolInfo {
@@ -200,12 +174,7 @@ mod tests {
         ];
         index.update_tools(&tools);
 
-        let activated = Arc::new(Mutex::new(Vec::new()));
-        let activator = Arc::new(MockActivator {
-            activated: activated.clone(),
-        });
-
-        let search_tool = ToolSearchTool::new(index, Some(activator));
+        let search_tool = ToolSearchTool::new(index);
         let ctx = ToolContext {
             working_dir: std::path::PathBuf::from("."),
             cancel: tokio_util::sync::CancellationToken::new(),
@@ -217,10 +186,6 @@ mod tests {
         let res = search_tool.execute(r#"{"queries": ["截屏"]}"#, &ctx).await;
         assert!(!res.is_error);
         assert!(res.content.contains("mcp__devtools__take_screenshot"));
-
-        let current_activated = activated.lock().await;
-        assert_eq!(current_activated.len(), 1);
-        assert_eq!(current_activated[0], "mcp__devtools__take_screenshot");
+        assert!(res.content.contains("tool_batch_load_and_exec"));
     }
 }
-
