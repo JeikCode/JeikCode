@@ -127,57 +127,24 @@ pub use write_state::{
 /// Names of the full neutral coding toolset — pass to
 /// [`ToolRegistry::mount`](jeikcode_kernel::tool::ToolRegistry::mount).
 pub fn coding_tool_names() -> &'static [&'static str] {
-    // NOTE: env-gated tools (`memory`, `request_user_input`) keep their name here
-    // UNCONDITIONALLY — `mount()` selects them only when actually registered (gate on),
-    // but the name MUST be in this allowlist or the registered tool never reaches the
-    // model's API `tools` array (registered != mounted).
-    //
-    // `memory` is feature-gated on the register side (`#[cfg(feature = "memory")]`
-    // around `MemoryTool`), so its name is gated here too — without this gate the
-    // default-features `cargo test` would assert a never-registered tool is mounted.
-    #[cfg(feature = "memory")]
-    {
-        return &[
-            "read_file",
-            "write_file",
-            "edit_file",
-            "list_directory",
-            "open_file",
-            "run_command",
-            "long_bash_keyword_actions",
-            "bash_kill_by_id",
-            "grep",
-            "glob",
-            "global_search_replace",
-            "todo_write",
-            "jeikcode_config_guide",
-            "jeikcode_config_reload",
-            "fetch_output",
-            "memory",
-            "request_user_input",
-        ];
-    }
-    #[cfg(not(feature = "memory"))]
-    {
-        return &[
-            "read_file",
-            "write_file",
-            "edit_file",
-            "list_directory",
-            "open_file",
-            "run_command",
-            "long_bash_keyword_actions",
-            "bash_kill_by_id",
-            "grep",
-            "glob",
-            "global_search_replace",
-            "todo_write",
-            "jeikcode_config_guide",
-            "jeikcode_config_reload",
-            "fetch_output",
-            "request_user_input",
-        ];
-    }
+    &[
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_directory",
+        "open_file",
+        "run_command",
+        "long_bash_keyword_actions",
+        "bash_kill_by_id",
+        "grep",
+        "glob",
+        "global_search_replace",
+        "todo_write",
+        "jeikcode_config_guide",
+        "jeikcode_config_reload",
+        "fetch_output",
+        "request_user_input",
+    ]
 }
 
 /// Register the full neutral coding toolset into `reg` (then `mount` the subset a
@@ -248,23 +215,10 @@ pub fn register_coding_tools_with_vision(reg: &mut ToolRegistry, vision: bool) {
             crate::tools::request_user_input::RequestUserInputTool,
         ));
     }
-    // Gate on JEIKCODE_MEMORY_TOOL (0/false/off → skip; absent/other → register).
-    // Mirrors the TodoTool env gate; the tool name stays in `coding_tool_names()`
-    // unconditionally (mount() skips unregistered names).
+    // MemoryTool mounting removed per requirement
     #[cfg(feature = "memory")]
     {
-        let memory_off = std::env::var("JEIKCODE_MEMORY_TOOL")
-            .ok()
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "0" | "false" | "off"
-                )
-            })
-            .unwrap_or(false);
-        if !memory_off {
-            reg.register(Arc::new(MemoryTool));
-        }
+        let _ = ();
     }
 }
 
@@ -910,13 +864,6 @@ mod tests {
                 "coding_tool_names() must include '{expected_name}'"
             );
         }
-        // "memory" is included only when the `memory` feature is on (feature-gated
-        // both in register_coding_tools_with_vision and in coding_tool_names()).
-        #[cfg(feature = "memory")]
-        assert!(
-            names.contains(&"memory"),
-            "coding_tool_names() must include 'memory'"
-        );
         // "request_user_input" is always included in coding_tool_names() (mount() skips it
         // when JEIKCODE_REQUEST_USER_INPUT is off; the name itself is unconditional).
         assert!(
@@ -929,10 +876,11 @@ mod tests {
             names.contains(&"fetch_output"),
             "coding_tool_names() must include 'fetch_output'"
         );
+        assert!(
+            !names.contains(&"memory"),
+            "coding_tool_names() must not include 'memory'"
+        );
         // No stale or duplicate names beyond EXPECTED_TOOL_NAMES + the gated extras.
-        #[cfg(feature = "memory")]
-        let extras: &[&str] = &["memory", "request_user_input", "fetch_output"];
-        #[cfg(not(feature = "memory"))]
         let extras: &[&str] = &["request_user_input", "fetch_output"];
         let expected_full: Vec<&str> = EXPECTED_TOOL_NAMES
             .iter()
@@ -1137,33 +1085,21 @@ mod tests {
     }
 
     /// `memory` is registered when `JEIKCODE_MEMORY_TOOL` is unset, and absent when
-    /// `JEIKCODE_MEMORY_TOOL=0`. Uses `MountedTools::defs()` (the stable public API)
-    /// since `MountedTools` does not expose `.len()`/`.is_empty()` directly.
     #[cfg(feature = "memory")]
     #[test]
-    fn memory_tool_registered_unless_env_off() {
-        std::env::remove_var("JEIKCODE_MEMORY_TOOL");
+    fn memory_tool_not_mounted() {
         let mut reg = ToolRegistry::new();
         register_coding_tools_with_vision(&mut reg, false);
         assert!(
-            reg.mount(&["memory"]).defs().len() == 1,
-            "memory mounts when env unset"
+            reg.mount(&["memory"]).defs().is_empty(),
+            "memory tool should not be mounted"
         );
-
-        std::env::set_var("JEIKCODE_MEMORY_TOOL", "0");
-        let mut reg_off = ToolRegistry::new();
-        register_coding_tools_with_vision(&mut reg_off, false);
-        assert!(
-            reg_off.mount(&["memory"]).defs().is_empty(),
-            "memory absent when env=0"
-        );
-        std::env::remove_var("JEIKCODE_MEMORY_TOOL");
     }
 
     #[cfg(feature = "memory")]
     #[test]
-    fn coding_tool_names_includes_memory() {
-        assert!(coding_tool_names().contains(&"memory"));
+    fn coding_tool_names_excludes_memory() {
+        assert!(!coding_tool_names().contains(&"memory"));
     }
 
     /// Regression: the tool must reach `MountedTools::defs()` (the API tools array) by

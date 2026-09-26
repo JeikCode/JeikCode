@@ -55,18 +55,9 @@ pub(crate) fn subagent_delegation_enabled() -> bool {
     crate::parts::subagent_enabled_from_env(std::env::var("JEIKCODE_SUBAGENT").ok().as_deref())
 }
 
-/// Whether the `memory` tool is mounted (mirrors the registration gate in
-/// `register_coding_tools_with_vision`): env `JEIKCODE_MEMORY_TOOL` != 0/false/off.
+/// Whether the `memory` tool is mounted: false since memory tool is unmounted.
 pub(crate) fn memory_tool_enabled() -> bool {
-    std::env::var("JEIKCODE_MEMORY_TOOL")
-        .ok()
-        .map(|v| {
-            !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "off"
-            )
-        })
-        .unwrap_or(true)
+    false
 }
 
 /// Injected only when `is_offline_active()`. States the ONE certain fact (no public
@@ -1650,26 +1641,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(jeikcode_memory_tool_env)]
-    fn persona_includes_memory_guidance_when_enabled() {
-        std::env::remove_var("JEIKCODE_MEMORY_TOOL");
-        let p = coding_persona("glm-5.2", true, false);
-        assert!(
-            p.contains("## MEMORY"),
-            "memory guidance present when tool enabled"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial(jeikcode_memory_tool_env)]
-    fn persona_omits_memory_guidance_when_env_off() {
-        std::env::set_var("JEIKCODE_MEMORY_TOOL", "0");
+    fn persona_omits_memory_guidance() {
         let p = coding_persona("glm-5.2", true, false);
         assert!(
             !p.contains("## MEMORY"),
-            "no memory guidance when tool disabled"
+            "no memory guidance when tool is unmounted"
         );
-        std::env::remove_var("JEIKCODE_MEMORY_TOOL");
     }
 
     // request_user_input_switch_enabled() is now default ON: unset → true, =0/false/off → false.

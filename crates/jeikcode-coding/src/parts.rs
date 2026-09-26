@@ -46,7 +46,7 @@ use jeikcode_kernel::message::{Message, Role, SessionSnapshot};
 use jeikcode_kernel::middleware::ToolMiddleware;
 use jeikcode_kernel::provider::LlmProvider;
 use jeikcode_kernel::tool::{MountedTools, MountedToolsPublisher, ToolRegistry};
-use jeikcode_review::{ReviewTool, ReviewToolConfig, SharedReviewProvider};
+use jeikcode_review::SharedReviewProvider;
 
 use crate::config::CodingAgentConfig;
 use crate::discipline::VerifyCadenceHook;
@@ -149,7 +149,7 @@ impl Default for PrepareOptions {
             mcp: true,
             memory: true,
             web: true,
-            review: true,
+            review: false,
             request_user_input: true,
             rate_limit_source: None,
         }
@@ -370,35 +370,8 @@ async fn prepare_with_plugin_hooks_reusing_lease(
         names.push("web_search".into());
     }
 
-    // Review-as-capability: a `code_review` sub-agent tool. The provider is filled at
-    // assemble (the tool is built here, before the provider exists) via this shared slot,
-    // so the reviewer reuses the host's correctly-built — possibly signed — provider.
-    let review_provider: Option<SharedReviewProvider> = if opts.review {
-        let slot: SharedReviewProvider = Arc::new(std::sync::RwLock::new(None));
-        registry.register(Arc::new(
-            ReviewTool::new(
-                slot.clone(),
-                ReviewToolConfig {
-                    model: cfg.model.clone(),
-                    context_window: cfg.context_window,
-                    stream_timeout: cfg.stream_timeout,
-                    request_timeout: cfg
-                        .request_timeout
-                        .unwrap_or_else(|| std::time::Duration::from_secs(300)),
-                    max_commits_without_confirmation: 20,
-                    max_files_without_confirmation: 40,
-                    max_changed_lines_without_confirmation: 4_000,
-                    max_diff_bytes_without_confirmation: 256 * 1024,
-                    rules_dir: None,
-                },
-            )
-            .with_tool_loop_policy(cfg.tool_loop_policy),
-        ));
-        names.push("code_review".into());
-        Some(slot)
-    } else {
-        None
-    };
+    // Review-as-capability: code_review tool mounting removed per requirement.
+    let review_provider: Option<SharedReviewProvider> = None;
 
     // `task` subagent tool (env-gated, default ON; opt out with JEIKCODE_SUBAGENT=0). Configured fast/capable tiers use
     // runtime-owned provider cells; missing/same-as-host tiers reuse the host slot.
@@ -2870,60 +2843,21 @@ mod tests {
         }
     }
 
-    /// The `code_review` sub-agent runs its OWN kernel loop with no turn-level
-    /// `TelemetryHook`, so its LLM rounds bypass the host's metering entirely. To keep
-    /// review token spend visible, the provider placed in the review slot at `assemble`
-    /// must be a metered decorator (when a telemetry sink is configured). This drives one
-    /// round through that provider and asserts the `LlmChat` lands.
+    /// Ensure the `code_review` tool is not mounted and review_provider slot is None.
     #[tokio::test]
     #[serial_test::serial(jeikcode_home)]
-    async fn review_subagent_provider_is_metered_for_token_telemetry() {
-        use futures::stream::StreamExt;
+    async fn code_review_tool_is_unmounted() {
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("JEIKCODE_HOME", home.path());
 
-        let (tel, captured) = jeikcode_telemetry::Telemetry::in_memory("test".into());
         let proj = tempfile::tempdir().unwrap();
-        let mut cfg = CodingAgentConfig::new("k", "http://localhost", "m", proj.path());
-        cfg.telemetry = Some(tel);
+        let cfg = CodingAgentConfig::new("k", "http://localhost", "m", proj.path());
 
         let mut opts = io_free_opts();
         opts.review = true;
-        let mut parts = prepare(&cfg, opts).await.unwrap();
+        let parts = prepare(&cfg, opts).await.unwrap();
 
-        let provider: Arc<dyn LlmProvider> = Arc::new(CannedProvider);
-        let _agent = assemble(&mut parts, &cfg, provider).unwrap();
-
-        let slot = parts
-            .review_provider
-            .clone()
-            .expect("review enabled ⇒ slot present");
-        let review_provider = slot
-            .read()
-            .unwrap()
-            .clone()
-            .expect("slot filled at assemble");
-        let mut stream = review_provider
-            .chat_stream(
-                &[Message::user("review this")],
-                &[],
-                &jeikcode_kernel::provider::ChatOptions::default(),
-            )
-            .await
-            .unwrap();
-        while stream.next().await.is_some() {}
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let llm_chats = captured
-            .lock()
-            .await
-            .iter()
-            .filter(|r| matches!(r.event, jeikcode_telemetry::Event::LlmChat { .. }))
-            .count();
-        assert_eq!(
-            llm_chats, 1,
-            "review sub-agent LLM round must emit one LlmChat token event"
-        );
+        assert!(parts.review_provider.is_none(), "review slot must be None when tool is unmounted");
     }
 
     /// A `/login` or `/model` swap updates `cfg.model` and re-runs `assemble` ONLY

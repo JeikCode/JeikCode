@@ -26,13 +26,12 @@ pub use use_skill::{ListSkillsTool, UseSkillTool};
 
 /// Names of the skill tools — pass to [`ToolRegistry::mount`](jeikcode_kernel::tool::ToolRegistry::mount).
 pub fn skill_tool_names() -> &'static [&'static str] {
-    &["use_skill", "list_skills"]
+    &["use_skill"]
 }
 
-/// Register `use_skill` + `list_skills` over a (caller-built) [`SkillRegistry`].
+/// Register skill tools over a (caller-built) [`SkillRegistry`].
 pub fn register_skill_tools(reg: &mut ToolRegistry, registry: Arc<SkillRegistry>) {
-    reg.register(Arc::new(UseSkillTool::new(registry.clone())));
-    reg.register(Arc::new(ListSkillsTool::new(registry)));
+    reg.register(Arc::new(UseSkillTool::new(registry)));
 }
 
 pub(crate) fn ok(content: impl Into<String>) -> ToolResult {

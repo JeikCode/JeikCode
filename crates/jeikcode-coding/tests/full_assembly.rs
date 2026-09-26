@@ -115,13 +115,15 @@ async fn full_assembly_lifecycle() {
             "code_explore",
             "web_fetch",
             "use_skill",
-            "code_review",
         ] {
             assert!(
                 defs.contains(&expected),
                 "missing tool {expected}: {defs:?}"
             );
         }
+        assert!(!defs.contains(&"code_review"), "code_review must not be mounted");
+        assert!(!defs.contains(&"memory"), "memory must not be mounted");
+        assert!(!defs.contains(&"list_skills"), "list_skills must not be mounted");
     }
 
     // Prefix order: persona (block 1) → workflow (block 2) (System) → MEMORY (frozen synthetic User),
@@ -150,7 +152,8 @@ async fn full_assembly_lifecycle() {
         assert!(
             first[2].role == Role::User
                 && first[2].synthetic
-                && first[2].text.starts_with("=== MEMORY ==="),
+                && (first[2].text.starts_with("=== MEMORY ===")
+                    || first[2].text.starts_with("<memory>")),
             "memory block follows the leading System run: {:?}",
             shape()
         );
@@ -260,7 +263,12 @@ async fn full_assembly_lifecycle() {
         );
         let memory_count = first
             .iter()
-            .filter(|m| m.role == Role::User && m.synthetic && m.text.starts_with("=== MEMORY ==="))
+            .filter(|m| {
+                m.role == Role::User
+                    && m.synthetic
+                    && (m.text.starts_with("=== MEMORY ===")
+                        || m.text.starts_with("<memory>"))
+            })
             .count();
         assert_eq!(
             memory_count, 1,

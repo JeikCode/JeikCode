@@ -164,7 +164,9 @@ async fn full_assembly_wire_prefix_is_cacheable_across_turns() {
     // "verifying" a trivial persona-only system).
     assert!(
         calls[0].0.iter().any(|m| {
-            m.role == Role::User && m.synthetic && m.text.starts_with("=== MEMORY ===")
+            m.role == Role::User
+                && m.synthetic
+                && (m.text.starts_with("=== MEMORY ===") || m.text.starts_with("<memory>"))
         }),
         "MemoryHook should add a frozen user block after the persona"
     );
