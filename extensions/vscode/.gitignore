@@ -1,6 +1,0 @@
-out/
-node_modules/
-*.vsix
-webview-ui/src/**/*.js
-webview-ui/src/**/*.js.map
-webview-ui/dist/

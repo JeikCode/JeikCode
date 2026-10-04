@@ -1,8 +1,0 @@
-.gitignore
-.vscode/**
-src/**
-tsconfig.json
-**/*.map
-node_modules/**
-webview-ui/**
-webview/**/*.ts
